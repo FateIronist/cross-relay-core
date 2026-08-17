@@ -1,12 +1,18 @@
-package top.fateironist.cross_relay_core.model.tunnel;
+package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
 import io.netty.util.AttributeKey;
+import io.netty.util.concurrent.Future;
+import lombok.Getter;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ClientServiceInfo;
 import top.fateironist.cross_relay_core.model.info.OriginalRequesterInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
 
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+@Getter
 public abstract class TunnelContext {
     public static final AttributeKey<TunnelContext> KEY = AttributeKey.valueOf("tunnelContext");
 
@@ -34,30 +40,7 @@ public abstract class TunnelContext {
         this.originalRequesterInfo = originalRequesterInfo;
     }
 
-//    public abstract Future<Boolean> close();
+    public abstract Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote);
 
-    public String getTunnelId() {
-        return tunnelId;
-    }
-
-    public TransportLayerProtocol getTransportLayerProtocol() {
-        return transportLayerProtocol;
-    }
-
-    public ClientServiceInfo getClientServiceInfo() {
-        return clientServiceInfo;
-    }
-
-    public ProxyClientInfo getClientProxyInfo() {
-        return proxyClientInfo;
-    }
-
-    public ProxyServerInfo getProxyServerInfo() {
-        return proxyServerInfo;
-    }
-
-    public OriginalRequesterInfo getOriginalRequesterInfo() {
-        return originalRequesterInfo;
-    }
-
+    public abstract Future<?> closeLocal();
 }

@@ -1,15 +1,6 @@
 package top.fateironist.cross_relay_core.model.options;
 
-import lombok.Builder;
-
-@Builder
-public class ControlServerStartOptions {
-    public int port;
-    public int maxConnections;
-
-    public long pingTimeout; // ms
-
-    // 单位 byte/s
+public class ServerInfoServerStartOptions implements Options{
     public long singleChannelReadLimit;
     public long singleChannelWriteLimit;
     public long globalChannelReadLimit;

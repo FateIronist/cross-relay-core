@@ -2,11 +2,12 @@ package top.fateironist.cross_relay_core.model.info;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import top.fateironist.cross_relay_core.model.DeploymentMode;
 import top.fateironist.cross_relay_core.model.control.ControlEvent;
-import top.fateironist.cross_relay_core.model.control.ControlEventEnum;
+import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
 import java.net.DatagramPacket;
@@ -16,6 +17,7 @@ import java.net.URL;
 import java.util.Set;
 
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProxyServerInfo {
@@ -34,6 +36,9 @@ public class ProxyServerInfo {
     // 若为分布式部署则需注册中心，从注册中心动态获取，负载均衡
     private Set<InetSocketAddress> registerAddresses;
 
+    private boolean enableProxyTcp = false;
+    private boolean enableProxyUdp = false;
+
     private boolean isAvailable;
 
     // 延迟
@@ -50,13 +55,48 @@ public class ProxyServerInfo {
         private InetSocketAddress serverControlAddress;
         private InetSocketAddress serverProxyRequestAddress;
         private InetSocketAddress serverInfoServerAddress;
+
+        public void setAdditional(ProxyServerAddress info) {
+            if (serverControlAddress == null) {
+                serverControlAddress = info.serverControlAddress;
+            }
+            if (serverProxyRequestAddress == null) {
+                serverProxyRequestAddress = info.serverProxyRequestAddress;
+            }
+            if (serverInfoServerAddress == null) {
+                serverInfoServerAddress = info.serverInfoServerAddress;
+            }
+        }
+
+        public boolean isSufficient() {
+            return serverControlAddress != null && serverProxyRequestAddress != null && serverInfoServerAddress != null;
+        }
     }
+
+    public static ProxyServerInfo createSingleProxyServerInfo(String serverName, ProxyServerAddress address, boolean enableProxyTcp, boolean enableProxyUdp) {
+        return ProxyServerInfo.builder()
+                .serverName(serverName)
+                .address(address)
+                .enableProxyTcp(enableProxyTcp)
+                .enableProxyUdp(enableProxyUdp)
+                .build();
+    }
+
+    public static ProxyServerInfo createDistributedProxyServerInfo(String serverName, Set<InetSocketAddress> registerAddresses, boolean enableProxyTcp, boolean enableProxyUdp) {
+        return ProxyServerInfo.builder()
+                .serverName(serverName)
+                .registerAddresses(registerAddresses)
+                .enableProxyTcp(enableProxyTcp)
+                .enableProxyUdp(enableProxyUdp)
+                .build();
+    }
+
 
     public void setAdditional(ProxyServerInfo info) {
         if (id == null) this.id = info.id;
         if (serverName == null) this.serverName = info.serverName;
         if (deploymentMode == null) this.deploymentMode = info.deploymentMode;
-        if (address == null) this.address = info.address;
+        address.setAdditional(info.address);
         if (registerAddresses == null) this.registerAddresses = info.registerAddresses;
         lastUpdateTime = System.currentTimeMillis();
     }
@@ -89,7 +129,7 @@ public class ProxyServerInfo {
                     socket.setSoTimeout(timeout);
 
                     // 构造请求
-                    ControlEvent<Void> request = new ControlEvent<>(ControlEventEnum.SERVER_INFO, null);
+                    ControlEvent<Void> request = new ControlEvent<>(ControlProtocolEventEnum.SERVER_INFO.getType(), null);
                     byte[] requestData = JsonUtil.OBJECT_MAPPER.writeValueAsBytes(request);
 
                     // 发送请求
@@ -114,12 +154,9 @@ public class ProxyServerInfo {
                             new TypeReference<ControlEvent<ProxyServerInfo>>() {}
                     );
 
-                    if (response.getType() == ControlEventEnum.SERVER_INFO && response.getBody() != null) {
+                    if (response.getType().equals(ControlProtocolEventEnum.SERVER_INFO.getType()) && response.getBody() != null) {
                         ProxyServerInfo serverInfo = response.getBody();
-                        this.id = serverInfo.getId();
-                        this.serverName = serverInfo.getServerName();
-                        this.deploymentMode = serverInfo.getDeploymentMode();
-                        this.registerAddresses = serverInfo.getRegisterAddresses();
+                        setAdditional(serverInfo);
                         this.isAvailable = true;
                         return;
                     }
@@ -140,6 +177,10 @@ public class ProxyServerInfo {
         } else {
             // TODO: 分布式部署，从注册中心动态获取
         }
+    }
+
+    public InetSocketAddress getProxyServerAddress() {
+
     }
 
 }

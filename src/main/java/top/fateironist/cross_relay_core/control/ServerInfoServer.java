@@ -10,15 +10,19 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.traffic.ChannelTrafficShapingHandler;
 import io.netty.util.CharsetUtil;
 import top.fateironist.cross_relay_core.Server;
-import top.fateironist.cross_relay_core.model.options.ControlServerStartOptions;
 import top.fateironist.cross_relay_core.model.control.ControlEvent;
-import top.fateironist.cross_relay_core.model.control.ControlEventEnum;
+import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
+import top.fateironist.cross_relay_core.model.options.Options;
+import top.fateironist.cross_relay_core.model.options.ServerInfoServerStartOptions;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
 import java.util.Map;
 import java.util.concurrent.Future;
 
+/**
+ * 对外暴露自身服务器代理信息UDP服务
+ */
 public class ServerInfoServer implements Server {
     public static final int PORT = 3461;
     private final Bootstrap bootstrap;
@@ -31,7 +35,8 @@ public class ServerInfoServer implements Server {
         this.bootstrap = new Bootstrap();
     }
 
-    public Future<Void> start(ControlServerStartOptions options) {
+    public Future<Void> start(Options option) {
+        ServerInfoServerStartOptions options = (ServerInfoServerStartOptions) option;
         bootstrap.group(workerGroup)
                 .channel(NioDatagramChannel.class)
                 .handler(new ChannelInitializer<NioDatagramChannel>() {
@@ -41,14 +46,14 @@ public class ServerInfoServer implements Server {
                         pipeline.addLast(new ChannelTrafficShapingHandler(options.getWriteLimit(), options.getReadLimit()));
                         pipeline.addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
                             @Override
-                            protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) {
+                            protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws JsonProcessingException {
                                 ByteBuf content = msg.content();
                                 String request = content.toString(CharsetUtil.UTF_8);
-                                ControlEvent<Map<String, Object>> event = JsonUtil.OBJECT_MAPPER.convertValue(request, new TypeReference<ControlEvent<Map<String, Object>>>() {});
+                                ControlEvent<Map<String, Object>> event = JsonUtil.OBJECT_MAPPER.readValue(request, new TypeReference<ControlEvent<Map<String, Object>>>() {});
 
-                                if (event.getType() == ControlEventEnum.SERVER_INFO) {
+                                if (ControlProtocolEventEnum.SERVER_INFO.equals(event.getType())) {
                                     try {
-                                        byte[] responseBytes = JsonUtil.OBJECT_MAPPER.writeValueAsBytes(new ControlEvent<>(ControlEventEnum.SERVER_INFO, proxyServerInfo));
+                                        byte[] responseBytes = JsonUtil.OBJECT_MAPPER.writeValueAsBytes(new ControlEvent<>(ControlProtocolEventEnum.SERVER_INFO.getType(), proxyServerInfo));
                                         DatagramPacket response = new DatagramPacket(
                                                 ctx.alloc().buffer().writeBytes(responseBytes),
                                                 msg.sender()

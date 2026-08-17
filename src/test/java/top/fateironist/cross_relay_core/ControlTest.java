@@ -14,11 +14,11 @@ import top.fateironist.cross_relay_core.control.listener.ControlServerListener;
 import top.fateironist.cross_relay_core.model.DeploymentMode;
 import top.fateironist.cross_relay_core.model.control.ControlContext;
 import top.fateironist.cross_relay_core.model.control.ControlEvent;
-import top.fateironist.cross_relay_core.model.control.ControlEventEnum;
+import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.options.ControlClientConnectOptions;
-import top.fateironist.cross_relay_core.model.options.ControlServerStartOptions;
+import top.fateironist.cross_relay_core.model.options.control.ControlClientConnectOptions;
+import top.fateironist.cross_relay_core.model.options.control.ControlServerStartOptions;
 
 import java.net.InetSocketAddress;
 import java.util.Map;
@@ -81,20 +81,16 @@ class ControlTest {
                 }
 
                 @Override
-                public boolean beforePermit(ControlContext context, ControlEvent event) {
+                public boolean beforePermit(ControlContext context, ControlEvent<Map<String, Object>> event) {
                     serverPermitLatch.countDown();
                     return true;
                 }
-
-                @Override
-                public void onMessage(ControlContext context, ControlEvent event) {
-                    if (event.getType() == ControlEventEnum.CLIENT_INFO) {
-                        serverContextRef.set(context);
-                        serverMessageLatch.countDown();
-                        context.writeAndFlush(new ControlEvent<>(ControlEventEnum.SERVER_INFO, Map.of("status", "ok")));
-                    }
-                }
             };
+            serverListener.addEventHandler(ControlProtocolEventEnum.CLIENT_INFO.getType(), (context, event) -> {
+                serverContextRef.set(context);
+                serverMessageLatch.countDown();
+                context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.SERVER_INFO.getType(), Map.of("status", "ok")));
+            });
 
             ControlServer controlServer = new ControlServer(serverBossGroup, serverWorkerGroup, proxyServerInfo, serverListener);
             ControlServerStartOptions serverOptions = ControlServerStartOptions.builder()
@@ -119,14 +115,10 @@ class ControlTest {
                     clientPermitLatch.countDown();
                     clientEncryptedLatch.countDown();
                 }
-
-                @Override
-                public void onMessage(ControlContext context, ControlEvent event) {
-                    if (event.getType() == ControlEventEnum.SERVER_INFO) {
-                        clientMessageLatch.countDown();
-                    }
-                }
             };
+            clientListener.addEventHandler(ControlProtocolEventEnum.SERVER_INFO.getType(), (context, event) -> {
+                clientMessageLatch.countDown();
+            });
 
             ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
             ControlClientConnectOptions clientOptions = ControlClientConnectOptions.builder()
@@ -163,7 +155,7 @@ class ControlTest {
                     "Client proxyServerInfo should be populated from server");
 
             // 6. 验证消息收发：client → server → client
-            clientCtx.writeAndFlush(new ControlEvent<>(ControlEventEnum.CLIENT_INFO, Map.of("info", "hello")));
+            clientCtx.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.CLIENT_INFO.getType(), Map.of("info", "hello")));
             assertTrue(serverMessageLatch.await(1, TimeUnit.SECONDS),
                     "Server should have received CLIENT_INFO");
             assertTrue(clientMessageLatch.await(1, TimeUnit.SECONDS),
@@ -208,7 +200,7 @@ class ControlTest {
 
             ControlServerListener serverListener = new ControlServerListener() {
                 @Override
-                public boolean beforePermit(ControlContext context, ControlEvent event) {
+                public boolean beforePermit(ControlContext context, ControlEvent<Map<String, Object>> event) {
                     return false;
                 }
             };
@@ -281,7 +273,7 @@ class ControlTest {
 
             ControlServerListener serverListener = new ControlServerListener() {
                 @Override
-                public boolean beforeConnect(Channel channel) {
+                public boolean beforeAccept(Channel channel) {
                     return false;
                 }
 

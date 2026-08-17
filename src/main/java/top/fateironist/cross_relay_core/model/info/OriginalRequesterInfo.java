@@ -12,8 +12,15 @@ import java.net.InetSocketAddress;
 @AllArgsConstructor
 public class OriginalRequesterInfo {
     private String id;
-    private InetSocketAddress inetSocketAddress;
-    private TransportLayerProtocol transportLayerProtocol;
+    private InetSocketAddress address;
+    private TransportLayerProtocol protocol;
     private boolean isAlive;
     private long timestamp;
+
+    public OriginalRequesterInfo(InetSocketAddress inetSocketAddress, TransportLayerProtocol transportLayerProtocol) {
+        this.address = address;
+        this.protocol = protocol;
+        this.isAlive = true;
+        this.timestamp = System.currentTimeMillis();
+    }
 }

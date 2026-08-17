@@ -7,6 +7,9 @@ import lombok.Data;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
 
+import java.util.Map;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Data
@@ -26,6 +29,10 @@ public class ControlContext {
 
     private boolean encrypted = false;
 
+    private final Integer maxTolerableAbnormalEventCount = 5;
+    private final AtomicInteger tolerableAbnormalEventCount = new AtomicInteger(0);
+
+
     public ControlContext (String id, ProxyClientInfo proxyClientInfo, Channel channel) {
         this.controlChannelId = id;
         this.proxyClientInfo = proxyClientInfo;
@@ -38,9 +45,9 @@ public class ControlContext {
         this.channel = channel;
     }
 
-    public void close() {
+    public Future<?> close() {
         if (pingScheduler != null) pingScheduler.cancel(true);
-        channel.close();
+        return channel.close();
     }
 
     public void writeAndFlush(ControlEvent event) {
@@ -50,5 +57,12 @@ public class ControlContext {
 
     public void writeAndFlush(String str) {
         channel.writeAndFlush(str);
+    }
+
+
+    public void handleAbnormalEvent(ControlEvent<Map<String, Object>> event) {
+        if (tolerableAbnormalEventCount.getAndIncrement() > maxTolerableAbnormalEventCount) {
+            close();
+        }
     }
 }

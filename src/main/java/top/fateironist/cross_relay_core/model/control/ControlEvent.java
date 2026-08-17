@@ -1,15 +1,12 @@
 package top.fateironist.cross_relay_core.model.control;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
-
-import java.util.Map;
 
 @Data
 public class ControlEvent<T> {
     private Long id;
     private Long ack;
-    private ControlEventEnum type;
+    private String type;
     private T body;
 
     public ControlEvent() {
@@ -19,7 +16,7 @@ public class ControlEvent<T> {
         this.ack = ack;
     }
 
-    public ControlEvent(ControlEventEnum eventType, T body) {
+    public ControlEvent(String eventType, T body) {
         this.type = eventType;
         this.body = body;
     }

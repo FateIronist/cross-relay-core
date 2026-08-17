@@ -4,7 +4,12 @@ import top.fateironist.cross_relay_core.Listener;
 import top.fateironist.cross_relay_core.model.control.ControlContext;
 import top.fateironist.cross_relay_core.model.control.ControlEvent;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.BiConsumer;
+
 public class ControlClientListener implements Listener {
+    private final Map<String, BiConsumer<ControlContext, ControlEvent<Map<String, Object>>>> eventHandlers = new HashMap<>();
 
     /**
      * 在channel被permit后，进行一些操作
@@ -26,8 +31,8 @@ public class ControlClientListener implements Listener {
      * @param context
      * @param event
      */
-    public void onMessage(ControlContext context, ControlEvent event) {
-
+    public final void onEvent(ControlContext context, ControlEvent<Map<String, Object>> event) {
+        eventHandlers.getOrDefault(event.getType(), (c, e) -> {}).accept(context, event);
     }
 
     /**
@@ -53,5 +58,10 @@ public class ControlClientListener implements Listener {
      */
     public void onClose(ControlContext context) {
 
+    }
+
+    public ControlClientListener addEventHandler(String event, BiConsumer<ControlContext, ControlEvent<Map<String, Object>>> handler) {
+        eventHandlers.put(event, handler);
+        return this;
     }
 }
