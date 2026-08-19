@@ -2,11 +2,16 @@ package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.EventLoop;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.Promise;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 import top.fateironist.cross_relay_core.model.info.ClientServiceInfo;
 import top.fateironist.cross_relay_core.model.info.OriginalRequesterInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
+
+import java.util.function.Function;
 
 public class ClientTunnelContext extends TunnelContext {
     private Channel clientToServiceChannel;
@@ -49,5 +54,44 @@ public class ClientTunnelContext extends TunnelContext {
     public void writeToServerAndFlush(ByteBuf byteBuf) {
         byteBuf.retain();
         clientToServerChannel.writeAndFlush(byteBuf);
+    }
+
+    @Override
+    public Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote, EventLoop eventLoop) {
+        Promise<?> promise = eventLoop.newPromise();
+        Thread.ofVirtual().start(() -> {
+            try {
+                closeRemote.apply(this).sync();
+                if (clientToServiceChannel != null && clientToServiceChannel.isOpen()) {
+                    clientToServiceChannel.close().sync();
+                }
+                if (clientToServerChannel != null && clientToServerChannel.isOpen()) {
+                    clientToServerChannel.close().sync();
+                }
+            } catch (InterruptedException e) {
+                promise.setFailure(e);
+            }
+            promise.setSuccess(null);
+        });
+        return promise;
+    }
+
+    @Override
+    public Future<?> closeLocal(EventLoop eventLoop) {
+        Promise<?> promise = eventLoop.newPromise();
+        Thread.ofVirtual().start(() -> {
+            try {
+                if (clientToServiceChannel != null && clientToServiceChannel.isOpen()) {
+                    clientToServiceChannel.close().sync();
+                }
+                if (clientToServerChannel != null && clientToServerChannel.isOpen()) {
+                    clientToServerChannel.close().sync();
+                }
+            } catch (InterruptedException e) {
+                promise.setFailure(e);
+            }
+            promise.setSuccess(null);
+        });
+        return promise;
     }
 }

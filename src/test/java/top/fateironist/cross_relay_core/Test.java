@@ -8,20 +8,51 @@ import io.netty.util.concurrent.Promise;
 import io.netty.util.concurrent.Future;
 
 public class Test {
-    public static void main(String[] args) throws Exception {
-        EventLoopGroup eventLoopGroup = new NioEventLoopGroup(1);
-        EventLoop eventLoop = eventLoopGroup.next();
-        Future<Void> future = eventLoop.newPromise();
+     public class ListNode {
+         int val;
+         ListNode next;
+         ListNode() {}
+         ListNode(int val) { this.val = val; }
+        ListNode(int val, ListNode next) { this.val = val; this.next = next; }
+     }
 
-        future.addListener(f -> {
-            Thread.sleep(1000);
-            System.out.println("Future completed");
-        });
+      public class TreeNode {
+          int val;
+          TreeNode left;
+         TreeNode right;
+         TreeNode() {}
+         TreeNode(int val) { this.val = val; }
+         TreeNode(int val, TreeNode left, TreeNode right) {
+         this.val = val;
+             this.left = left;
+                this.right = right;
+         }
+     }
 
-        long startTime = System.currentTimeMillis();
-        Promise<Void> promise = (Promise<Void>) future;
-        promise.setSuccess(null);
-        future.get();
-        System.out.println("Time taken: " + (System.currentTimeMillis() - startTime) + "ms");
+    class Solution {
+        public boolean isSubStructure(TreeNode A, TreeNode B) {
+            if (A == null || B == null) {
+                return false;
+            }
+
+            if (A.val == B.val && backTrack(A, B)) {
+                return true;
+            }
+
+            return isSubStructure(A.left, B) || isSubStructure(A.right, B);
+        }
+
+
+        public boolean backTrack(TreeNode A, TreeNode B) {
+            if (B == null) {
+                return true;
+            }
+
+            if (A == null || A.val != B.val) {
+                return false;
+            }
+
+            return backTrack(A.left, B.left) && backTrack(A.right, B.right);
+        }
     }
 }

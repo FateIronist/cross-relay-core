@@ -1,5 +1,7 @@
 package top.fateironist.cross_relay_core.model.info;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -20,6 +22,7 @@ import java.util.Set;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class ProxyServerInfo {
     // 服务端自己随机生成并通过url分发；若为手动填入则通过serverControl端口回填。
     private String id;
@@ -51,6 +54,7 @@ public class ProxyServerInfo {
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ProxyServerAddress {
         private InetSocketAddress serverControlAddress;
         private InetSocketAddress serverProxyRequestAddress;
@@ -68,6 +72,7 @@ public class ProxyServerInfo {
             }
         }
 
+        @JsonIgnore
         public boolean isSufficient() {
             return serverControlAddress != null && serverProxyRequestAddress != null && serverInfoServerAddress != null;
         }
@@ -96,7 +101,11 @@ public class ProxyServerInfo {
         if (id == null) this.id = info.id;
         if (serverName == null) this.serverName = info.serverName;
         if (deploymentMode == null) this.deploymentMode = info.deploymentMode;
-        address.setAdditional(info.address);
+        if (address == null) {
+            this.address = info.address;
+        } else if (info.address != null) {
+            address.setAdditional(info.address);
+        }
         if (registerAddresses == null) this.registerAddresses = info.registerAddresses;
         lastUpdateTime = System.currentTimeMillis();
     }
@@ -180,7 +189,7 @@ public class ProxyServerInfo {
     }
 
     public InetSocketAddress getProxyServerAddress() {
-
+        return null; // TODO
     }
 
 }

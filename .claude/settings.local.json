@@ -1,0 +1,72 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Edit",
+      "MultiEdit",
+      "Write(src/**)",
+      "Write(tests/**)",
+      "Bash(npm *)",
+      "Bash(pnpm *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(find *)"
+    ],
+    "deny": [
+      "Read(**/.env*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/secrets/**)",
+      "Read(**/credentials/**)",
+      "Write(**/.env*)",
+      "Write(**/secrets/**)",
+      "Write(package-lock.json)",
+      "Write(.github/workflows/*)",
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(docker *)",
+      "Bash(curl * | sh)",
+      "Bash(chmod *)"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "contextWindow": {
+    "compressionThreshold": 0.8
+  },
+  "hooks": {
+    "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "statusMessage": "【强制加载项目约束 CLAUDE.md】",
+          "timeout": 10,
+          "command": "echo '==========【最高优先级强制规则，必须严格遵守，禁止忽略/变通】==========' && cat CLAUDE.md 2>/dev/null || echo '⚠️ 当前项目缺少 CLAUDE.md 规则文件' && echo -e '\\n硬性约束：后续所有思考、代码、工具调用、命令执行必须逐条遵循上方全部条款，违规操作将被拦截校验'"
+        }
+      ]
+    }
+  ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 8,
+            "command": "echo -e \"\\n=====本轮执行前置强制约束【最高优先级】=====\\n\" && cat CLAUDE.md 2>/dev/null && echo -e \"\\n硬性要求：本次所有思考、代码、工具操作必须严格遵守上面全部条款，禁止忽略、简化、变通任何规则\""
+          }
+        ]
+      }
+    ]
+  }
+}

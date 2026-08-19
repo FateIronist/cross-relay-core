@@ -1,5 +1,6 @@
 package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
+import io.netty.channel.EventLoop;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
 import lombok.Getter;
@@ -40,7 +41,7 @@ public abstract class TunnelContext {
         this.originalRequesterInfo = originalRequesterInfo;
     }
 
-    public abstract Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote);
+    public abstract Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote, EventLoop eventLoop);
 
-    public abstract Future<?> closeLocal();
+    public abstract Future<?> closeLocal(EventLoop eventLoop);
 }

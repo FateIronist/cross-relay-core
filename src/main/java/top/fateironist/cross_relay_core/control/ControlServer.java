@@ -21,8 +21,8 @@ import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.control.Error;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.options.control.ControlServerStartOptions;
-import top.fateironist.cross_relay_core.model.options.Options;
+import top.fateironist.cross_relay_core.model.args.control.ControlServerStartArgs;
+import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.util.EncryptUtil;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
@@ -56,8 +56,10 @@ public class ControlServer implements Server {
     }
 
     @Override
-    public ChannelFuture start(Options option) {
-        ControlServerStartOptions options = (ControlServerStartOptions) option;
+    public ChannelFuture start(AbstractArgs arg) {
+        ControlServerStartArgs args = (ControlServerStartArgs) arg;
+        var opts = args.getOptions();
+
         bootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .handler(new ChannelInitializer<NioServerSocketChannel>() {
@@ -81,14 +83,14 @@ public class ControlServer implements Server {
                         });
                     }
                 })
-                .option(ChannelOption.SO_BACKLOG, options.maxConnections)
+                .option(ChannelOption.SO_BACKLOG, opts.getMaxConnections())
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast(new IdleStateHandler(options.pingTimeout, 0, 0, TimeUnit.MILLISECONDS));
+                        pipeline.addLast(new IdleStateHandler(opts.getPingTimeout(), 0, 0, TimeUnit.MILLISECONDS));
                         pipeline.addLast(new IdleEventHandler(controlServerListener::onTimeOut));
                         pipeline.addLast(new LengthFieldBasedFrameDecoder(65535, 0, 4, 0, 4));
                         pipeline.addLast(new LengthFieldPrepender(4));
@@ -99,12 +101,12 @@ public class ControlServer implements Server {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, ControlEvent<Map<String, Object>> event) {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                log.debug("[ControlServer] [{}({})] RECEIVED event: type={}", context.getControlChannelId(), ctx.channel().remoteAddress(), event.getType());
+                                log.debug("[ControlServer] [{}，L:{}，R:{}] RECEIVED data", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
                                 // 3.进行密钥互换
                                 if (!context.isEncrypted()) {
                                     if (ControlProtocolEventEnum.SESSION_PUBLIC_KEY.equals(event.getType())) {
-                                        log.debug("[ControlServer] [{}({})] HANDSHAKE step 1: received client RSA public key", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                        log.debug("[ControlServer] [{}，L:{}，R:{}] PUBLIC-KEY-RECEIVED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                         String pubKey = (String) event.getBody().get("publicKey");
                                         PublicKey publicKey = EncryptUtil.base64ToPublicKey(pubKey);
 
@@ -118,7 +120,7 @@ public class ControlServer implements Server {
                                         ctx.channel().attr(EventEncryptHandler.SESSION_PUBLIC_KEY).set(publicKey);
                                         ctx.channel().attr(EventEncryptHandler.SESSION_SECRET_KEY).set(secretKey);
 
-                                        log.debug("[ControlServer] [{}({})] HANDSHAKE step 2: sent SESSION_SECRET_KEY (AES key encrypted with client RSA public key)", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                        log.debug("[ControlServer] [{}，L:{}，R:{}] SECRET-KEY-SENT", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                         return;
                                     }
 
@@ -131,22 +133,24 @@ public class ControlServer implements Server {
 
                                         context.setEncrypted(true);
 
+                                        log.debug("[ControlServer] [{}，L:{}，R:{}] ENCRYPTED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
+
                                         // 4.进行权限验证，验证通过则允许正式连接
                                         if (controlServerListener.beforePermit(context, event)) {
                                             context.setPermit(true);
-                                            log.debug("[ControlServer] [{}({})] PERMIT: connection permitted by listener", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                            log.debug("[ControlServer] [{}，L:{}，R:{}] PERMITTED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                             context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.CONNECTION_PERMIT.getType(), Map.of("controlChannelId", context.getControlChannelId(), "proxyServerInfo", proxyServerInfo)));
                                         }else {
-                                            log.debug("[ControlServer] [{}({})] DENIED: connection denied by listener, closing", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                            log.debug("[ControlServer] [{}，L:{}，R:{}] DENIED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                             context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.ERROR.getType(), new Error("Control Channel Not Permitted!")));
                                             context.close();
                                         }
 
-                                        log.debug("[ControlServer] [{}({})] HANDSHAKE step 3: encryption established, RSA public key removed, AES key active", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                        log.debug("[ControlServer] [{}，L:{}，R:{}] HANDSHAKE-COMPLETE", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                         return;
                                     }
 
-                                    log.debug("[ControlServer] [{}({})] REJECTED: channel not encrypted yet, event type={}", context.getControlChannelId(), ctx.channel().remoteAddress(), event.getType());
+                                    log.debug("[ControlServer] [{}，L:{}，R:{}] REJECTED-NOT-ENCRYPTED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.ERROR.getType(), new Error("Control Channel Not Encrypted Yet!")));
                                     context.handleAbnormalEvent(event);
 
@@ -154,7 +158,7 @@ public class ControlServer implements Server {
                                 }
 
                                 if (!context.isPermit()) {
-                                    log.debug("[ControlServer] [{}({})] DENIED: connection denied by listener, closing", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                    log.debug("[ControlServer] [{}，L:{}，R:{}] DENIED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.ERROR.getType(), new Error("Control Channel Not Permitted!")));
                                     context.close();
 
@@ -162,12 +166,12 @@ public class ControlServer implements Server {
                                 }
 
                                 if (ControlProtocolEventEnum.PING.equals(event.getType())) {
-                                    log.debug("[ControlServer] [{}({})] PING -> PONG", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                    log.debug("[ControlServer] [{}，L:{}，R:{}] PING-PONG", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     long pingTime = (long) event.getBody().get("pingTime");
                                     context.writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.PONG.getType(), Map.of("pingTime", pingTime)));
                                 }else {
                                     // 5.进行消息处理
-                                    log.debug("[ControlServer] [{}({})] DELEGATE onMessage: type={}", context.getControlChannelId(), ctx.channel().remoteAddress(), event.getType());
+                                    log.debug("[ControlServer] [{}，L:{}，R:{}] DELEGATE-ON-MESSAGE", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     controlServerListener.onEvent(context, event);
                                 }
                             }
@@ -180,7 +184,7 @@ public class ControlServer implements Server {
                                 ControlContext context = new ControlContext(id, proxyClientInfo, ctx.channel());
                                 ctx.channel().attr(ControlContext.KEY).set(context);
 
-                                log.debug("[ControlServer] [{}({})] ACTIVE", id, ctx.channel().remoteAddress());
+                                log.debug("[ControlServer] [{}，L:{}，R:{}] ACTIVE", id, ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                 // 2.接收完成，分配id完成，但还未分发，id顺便在permit时分发
                                 controlServerListener.afterAccept(context);
                             }
@@ -188,21 +192,20 @@ public class ControlServer implements Server {
                             @Override
                             public void channelInactive(ChannelHandlerContext ctx) {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                log.debug("[ControlServer] [{}({})] INACTIVE: encrypted={}, permit={}",
+                                log.debug("[ControlServer] [{}，L:{}，R:{}] INACTIVE",
                                         context != null ? context.getControlChannelId() : null,
-                                        ctx.channel().remoteAddress(),
-                                        context != null ? context.isEncrypted() : "unknown",
-                                        context != null ? context.isPermit() : "unknown");
+                                        ctx.channel().localAddress(),
+                                        ctx.channel().remoteAddress());
                                 if (context != null) controlServerListener.onClose(context);
                             }
 
                             @Override
                             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                log.debug("[ControlServer] [{}({})] EXCEPTION: {}",
+                                log.debug("[ControlServer] [{}，L:{}，R:{}] EXCEPTION",
                                         context != null ? context.getControlChannelId() : null,
-                                        ctx.channel().remoteAddress(),
-                                        cause.getMessage(), cause);
+                                        ctx.channel().localAddress(),
+                                        ctx.channel().remoteAddress(), cause);
                                 if (context != null) controlServerListener.caughtException(context, cause);
                                 else ctx.close();
                             }
@@ -210,8 +213,8 @@ public class ControlServer implements Server {
                     }
                 });
 
-        log.debug("[ControlServer] Binding to port {}", options.port);
-        return bootstrap.bind(options.port);
+        log.debug("[ControlServer] Binding to port {}", opts.getPort());
+        return bootstrap.bind(opts.getPort());
     }
 
     @Override

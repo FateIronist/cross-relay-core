@@ -13,8 +13,8 @@ import top.fateironist.cross_relay_core.Server;
 import top.fateironist.cross_relay_core.model.control.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.options.Options;
-import top.fateironist.cross_relay_core.model.options.ServerInfoServerStartOptions;
+import top.fateironist.cross_relay_core.model.args.AbstractArgs;
+import top.fateironist.cross_relay_core.model.args.ServerInfoServerStartArgs;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
 import java.util.Map;
@@ -35,15 +35,17 @@ public class ServerInfoServer implements Server {
         this.bootstrap = new Bootstrap();
     }
 
-    public Future<Void> start(Options option) {
-        ServerInfoServerStartOptions options = (ServerInfoServerStartOptions) option;
+    public Future<Void> start(AbstractArgs arg) {
+        ServerInfoServerStartArgs args = (ServerInfoServerStartArgs) arg;
+        var opts = args.getOptions();
+
         bootstrap.group(workerGroup)
                 .channel(NioDatagramChannel.class)
                 .handler(new ChannelInitializer<NioDatagramChannel>() {
                     @Override
                     protected void initChannel(NioDatagramChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast(new ChannelTrafficShapingHandler(options.getWriteLimit(), options.getReadLimit()));
+                        pipeline.addLast(new ChannelTrafficShapingHandler(opts.getWriteLimit(), opts.getReadLimit()));
                         pipeline.addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws JsonProcessingException {

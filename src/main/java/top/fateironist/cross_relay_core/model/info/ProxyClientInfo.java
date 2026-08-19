@@ -1,5 +1,6 @@
 package top.fateironist.cross_relay_core.model.info;
 
+import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -7,6 +8,7 @@ import java.net.InetSocketAddress;
 
 @Data
 @NoArgsConstructor
+@AllArgsConstructor
 public class ProxyClientInfo {
     private String id;
     private String credentials;
@@ -17,6 +19,10 @@ public class ProxyClientInfo {
     public ProxyClientInfo(InetSocketAddress address) {
         this.address = address;
         this.isAlive = true;
+    }
+
+    public ProxyClientInfo(String credentials) {
+        this.credentials = credentials;
     }
 
     public void setAdditional(ProxyClientInfo info) {

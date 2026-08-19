@@ -2,6 +2,7 @@ package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.EventLoop;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
@@ -54,19 +55,19 @@ public class ServerTunnelContext extends TunnelContext {
     }
 
     @Override
-    public Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote) {
+    public Future<?> closeGracefully(Function<TunnelContext, Future<?>> closeRemote, EventLoop eventLoop) {
 
-        Promise<?> promise = serverToRequesterChannel.eventLoop().newPromise();
+        Promise<?> promise = eventLoop.newPromise();
 
         Thread.ofVirtual().start(() -> {
             try {
                 closeRemote.apply(this).sync();
 
-                if (serverToClientChannel != null) {
+                if (serverToClientChannel != null && serverToClientChannel.isOpen()) {
                     serverToClientChannel.close().sync();
                 }
 
-                if (serverToRequesterChannel != null) {
+                if (serverToRequesterChannel != null && serverToRequesterChannel.isOpen()) {
                     serverToRequesterChannel.close().sync();
                 }
             } catch (InterruptedException e) {
@@ -81,18 +82,17 @@ public class ServerTunnelContext extends TunnelContext {
     }
 
     @Override
-    public Future<?> closeLocal() {
-
-        Promise<?> promise = serverToRequesterChannel.eventLoop().newPromise();
+    public Future<?> closeLocal(EventLoop eventLoop) {
+        Promise<?> promise = eventLoop.newPromise();
 
         Thread.ofVirtual().start(() -> {
             try {
 
-                if (serverToClientChannel != null) {
+                if (serverToClientChannel != null && serverToClientChannel.isOpen()) {
                     serverToClientChannel.close().sync();
                 }
 
-                if (serverToRequesterChannel != null) {
+                if (serverToRequesterChannel != null && serverToRequesterChannel.isOpen()) {
                     serverToRequesterChannel.close().sync();
                 }
             } catch (InterruptedException e) {

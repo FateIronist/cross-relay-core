@@ -22,4 +22,9 @@ public class ClientServiceInfo {
     public boolean checkAddress() {
         return address != null && (address.getAddress().isLoopbackAddress() || address.getAddress().isAnyLocalAddress()) && address.getPort() > 0;
     }
+
+    public ClientServiceInfo(InetSocketAddress address, TransportLayerProtocol transportLayerProtocol) {
+        this.address = address;
+        this.transportLayerProtocol = transportLayerProtocol;
+    }
 }

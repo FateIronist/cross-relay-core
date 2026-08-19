@@ -22,8 +22,8 @@ import top.fateironist.cross_relay_core.model.control.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.options.control.ControlClientConnectOptions;
-import top.fateironist.cross_relay_core.model.options.Options;
+import top.fateironist.cross_relay_core.model.args.control.ControlClientConnectAbstractArgs;
+import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.util.EncryptUtil;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
@@ -56,8 +56,9 @@ public class ControlClient implements Client {
     }
 
     @Override
-    public Future<Void> connect(Options option) {
-        ControlClientConnectOptions options = (ControlClientConnectOptions) option;
+    public Future<Void> connect(AbstractArgs arg) {
+        ControlClientConnectAbstractArgs args = (ControlClientConnectAbstractArgs) arg;
+        var opts = args.getOptions();
 
         if (proxyServerInfo.getAddress() == null || proxyServerInfo.getAddress().getServerControlAddress() == null) {
 
@@ -81,7 +82,7 @@ public class ControlClient implements Client {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast(new IdleStateHandler(options.pingTimeout, 0, 0, TimeUnit.MILLISECONDS));
+                        pipeline.addLast(new IdleStateHandler(opts.getPingTimeout(), 0, 0, TimeUnit.MILLISECONDS));
                         pipeline.addLast(new IdleEventHandler(controlClientListener::onTimeOut));
                         pipeline.addLast(new LengthFieldBasedFrameDecoder(65535, 0, 4, 0, 4));
                         pipeline.addLast(new LengthFieldPrepender(4));
@@ -92,13 +93,12 @@ public class ControlClient implements Client {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, ControlEvent<Map<String, Object>> event) {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                String remoteAddress = String.valueOf(ctx.channel().remoteAddress());
-                                log.debug("[ControlClient] [{}({})] RECEIVED event: type={}", context.getControlChannelId(), remoteAddress, event.getType());
+                                log.debug("[ControlClient] [{}，L:{}，R:{}] RECEIVED data", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
                                 if (!context.isEncrypted()) {
                                     // 2.收到对称密钥
                                     if (ControlProtocolEventEnum.SESSION_SECRET_KEY.equals(event.getType())) {
-                                        log.debug("[ControlClient] [{}({})] HANDSHAKE step 2: received server AES key, switching to AES encryption", context.getControlChannelId(), remoteAddress);
+                                        log.debug("[ControlClient] [{}，L:{}，R:{}] SECRET-KEY-RECEIVED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                         PrivateKey privateKey = ctx.channel().attr(EventEncryptHandler.SESSION_PRIVATE_KEY).get();
 
                                         String secretKeyStr = (String) event.getBody().get("secretKey");
@@ -110,27 +110,27 @@ public class ControlClient implements Client {
                                         ctx.channel().attr(EventEncryptHandler.SESSION_PRIVATE_KEY).set(null);
 
                                         context.setEncrypted(true);
-                                        log.debug("[ControlClient] [{}({})] HANDSHAKE complete: encryption established, AES key active", context.getControlChannelId(), remoteAddress);
+                                        log.debug("[ControlClient] [{}，L:{}，R:{}] ENCRYPTED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
                                         // 3.返回ACK附带客户端信息
                                         ControlEvent<ProxyClientInfo> response = new ControlEvent<>(ControlProtocolEventEnum.SESSION_SECRET_ACK.getType(), proxyClientInfo);
                                         context.writeAndFlush(response);
-                                        log.debug("[ControlClient] [{}({})] HANDSHAKE step 3: sent SESSION_SECRET_ACK with client proxy info", context.getControlChannelId(), remoteAddress);
+                                        log.debug("[ControlClient] [{}，L:{}，R:{}] SESSION-ACK-SENT", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
                                         // 定时Ping
                                         ScheduledFuture<?> scheduledFuture = workerGroup.scheduleAtFixedRate(() -> {
                                             if (context.isPermit()) {
-                                                log.debug("[ControlClient] [{}({})] PING -> server", context.getControlChannelId(), remoteAddress);
+                                                log.debug("[ControlClient] [{}，L:{}，R:{}] PING-SENT", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                                 ctx.channel().writeAndFlush(new ControlEvent<>(ControlProtocolEventEnum.PING.getType(), Map.of("pingTime", System.currentTimeMillis())));
                                             }
-                                        }, options.pingInterval, options.pingInterval, TimeUnit.MILLISECONDS);
+                                        }, opts.getPingInterval(), opts.getPingInterval(), TimeUnit.MILLISECONDS);
                                         context.setPingScheduler(scheduledFuture);
 
                                         return;
                                     }
 
                                     // not encrypted yet
-                                    log.debug("[ControlClient] [{}({})] HANDSHAKE step 2 FAILED: received unexpected event type {}", context.getControlChannelId(), remoteAddress, event.getType());
+                                    log.debug("[ControlClient] [{}，L:{}，R:{}] NO ENCRYPTED YET", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     context.handleAbnormalEvent(event);
 
                                     return;
@@ -148,14 +148,14 @@ public class ControlClient implements Client {
                                         context.getProxyServerInfo().setAdditional(proxyServerInfo);
 
                                         controlClientListener.afterPermit(context);
-                                        log.debug("[ControlClient] [{}({})] PERMITTED: connection established", context.getControlChannelId(), remoteAddress);
-
+                                        log.debug("[ControlClient] [{}，L:{}，R:{}] PERMITTED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
+                                        log.debug("[ControlClient] [{}，L:{}，R:{}] HANDSHAKE-COMPLETE", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                         return;
                                     }
 
                                     controlClientListener.onDeny(context);
                                     context.close();
-                                    log.debug("[ControlClient] [{}({})] DENY: connection deny", context.getControlChannelId(), remoteAddress);
+                                    log.debug("[ControlClient] [{}，L:{}，R:{}] DENIED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
                                     return;
                                 }
@@ -164,16 +164,18 @@ public class ControlClient implements Client {
                                     ProxyServerInfo proxyServerInfo = context.getProxyServerInfo();
                                     long lastPingTime = (long) event.getBody().get("pingTime");
                                     proxyServerInfo.receivePong(lastPingTime);
-                                    log.debug("[ControlClient] [{}({})] PONG <- server, latency={}ms", context.getControlChannelId(), remoteAddress, proxyServerInfo.getLatency());
+                                    log.debug("[ControlClient] [{}，L:{}，R:{}] PONG-RECEIVED", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                 }else {
-                                    log.debug("[ControlClient] [{}({})] DELEGATE onMessage: type={}", context.getControlChannelId(), remoteAddress, event.getType());
+                                    log.debug("[ControlClient] [{}，L:{}，R:{}] DELEGATE-ON-MESSAGE", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                     controlClientListener.onEvent(context, event);
                                 }
                             }
 
                             @Override
                             public void channelActive(ChannelHandlerContext ctx) {
-                                log.debug("[ControlClient] [{}({})] ACTIVE: connected, generating RSA key pair", (Object) null, ctx.channel().remoteAddress());
+                                ControlContext context = new ControlContext(null, new ProxyServerInfo(), ctx.channel());
+                                ctx.channel().attr(ControlContext.KEY).set(context);
+                                log.debug("[ControlClient] [{}，L:{}，R:{}] ACTIVE", null, ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                 // 1.发送公钥
                                 KeyPair keyPair = EncryptUtil.generateRSAKeyPair();
                                 ctx.channel().attr(EventEncryptHandler.SESSION_PRIVATE_KEY).set(keyPair.getPrivate());
@@ -181,19 +183,17 @@ public class ControlClient implements Client {
 
                                 ControlEvent<Map<String, Object>> event = new ControlEvent<>(ControlProtocolEventEnum.SESSION_PUBLIC_KEY.getType(), Map.of("publicKey", publicKey));
 
-                                ControlContext context = new ControlContext(null, new ProxyServerInfo(), ctx.channel());
-                                ctx.channel().attr(ControlContext.KEY).set(context);
                                 context.writeAndFlush(event);
-                                log.debug("[ControlClient] [{}({})] HANDSHAKE step 1: sent SESSION_PUBLIC_KEY (RSA public key)", context.getControlChannelId(), ctx.channel().remoteAddress());
+                                log.debug("[ControlClient] [{}，L:{}，R:{}] PUBLIC-KEY-SENT", context.getControlChannelId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                             }
 
                             @Override
                             public void channelInactive(ChannelHandlerContext ctx) throws Exception {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                log.debug("[ControlClient] [{}({})] INACTIVE: encrypted={}",
+                                log.debug("[ControlClient] [{}，L:{}，R:{}] INACTIVE",
                                         context != null ? context.getControlChannelId() : null,
-                                        ctx.channel().remoteAddress(),
-                                        context != null ? context.isEncrypted() : "unknown");
+                                        ctx.channel().localAddress(),
+                                        ctx.channel().remoteAddress());
                                 if (context != null) {
                                     controlClientListener.onClose(context);
                                 }
@@ -203,10 +203,10 @@ public class ControlClient implements Client {
                             @Override
                             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                 ControlContext context = ctx.channel().attr(ControlContext.KEY).get();
-                                log.debug("[ControlClient] [{}({})] EXCEPTION: {}",
+                                log.debug("[ControlClient] [{}，L:{}，R:{}] EXCEPTION",
                                         context != null ? context.getControlChannelId() : null,
-                                        ctx.channel().remoteAddress(),
-                                        cause.getMessage(), cause);
+                                        ctx.channel().localAddress(),
+                                        ctx.channel().remoteAddress(), cause);
                                 if (context != null) controlClientListener.caughtException(context, cause);
                                 else ctx.close();
                             }

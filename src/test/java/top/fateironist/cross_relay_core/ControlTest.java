@@ -17,8 +17,8 @@ import top.fateironist.cross_relay_core.model.control.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.options.control.ControlClientConnectOptions;
-import top.fateironist.cross_relay_core.model.options.control.ControlServerStartOptions;
+import top.fateironist.cross_relay_core.model.args.control.ControlClientConnectAbstractArgs;
+import top.fateironist.cross_relay_core.model.args.control.ControlServerStartArgs;
 
 import java.net.InetSocketAddress;
 import java.util.Map;
@@ -93,11 +93,10 @@ class ControlTest {
             });
 
             ControlServer controlServer = new ControlServer(serverBossGroup, serverWorkerGroup, proxyServerInfo, serverListener);
-            ControlServerStartOptions serverOptions = ControlServerStartOptions.builder()
+            ControlServerStartArgs serverOptions = new ControlServerStartArgs(opts -> opts
                     .port(0)
                     .maxConnections(10)
-                    .pingTimeout(1000)
-                    .build();
+                    .pingTimeout(1000));
 
             ChannelFuture serverFuture = controlServer.start(serverOptions);
             serverFuture.sync();
@@ -120,12 +119,13 @@ class ControlTest {
                 clientMessageLatch.countDown();
             });
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
-            ControlClientConnectOptions clientOptions = ControlClientConnectOptions.builder()
-                    .address(new InetSocketAddress("127.0.0.1", actualPort))
+            InetSocketAddress serverAddr = new InetSocketAddress("127.0.0.1", actualPort);
+            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(serverAddr, serverAddr, serverAddr));
+
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(50)
-                    .pingTimeout(1000)
-                    .build();
+                    .pingTimeout(1000));
 
             controlClient.connect(clientOptions).get();
 
@@ -206,11 +206,10 @@ class ControlTest {
             };
 
             ControlServer controlServer = new ControlServer(serverBossGroup, serverWorkerGroup, proxyServerInfo, serverListener);
-            ControlServerStartOptions serverOptions = ControlServerStartOptions.builder()
+            ControlServerStartArgs serverOptions = new ControlServerStartArgs(opts -> opts
                     .port(0)
                     .maxConnections(10)
-                    .pingTimeout(1000)
-                    .build();
+                    .pingTimeout(1000));
 
             ChannelFuture serverFuture = controlServer.start(serverOptions);
             serverFuture.sync();
@@ -230,14 +229,15 @@ class ControlTest {
                     clientCloseLatch.countDown();
                 }
             };
+            
+            InetSocketAddress denyAddr = new InetSocketAddress("127.0.0.1", actualPort);
+            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(denyAddr, denyAddr, denyAddr));
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
-            ControlClientConnectOptions clientOptions = ControlClientConnectOptions.builder()
-                    .address(new InetSocketAddress("127.0.0.1", actualPort))
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(100)
-                    .pingTimeout(1000)
-                    .build();
-
+                    .pingTimeout(1000));
+            
             controlClient.connect(clientOptions).get();
 
             // 验证客户端被拒绝
@@ -284,11 +284,10 @@ class ControlTest {
             };
 
             ControlServer controlServer = new ControlServer(serverBossGroup, serverWorkerGroup, proxyServerInfo, serverListener);
-            ControlServerStartOptions serverOptions = ControlServerStartOptions.builder()
+            ControlServerStartArgs serverOptions = new ControlServerStartArgs(opts -> opts
                     .port(0)
                     .maxConnections(10)
-                    .pingTimeout(1000)
-                    .build();
+                    .pingTimeout(1000));
 
             ChannelFuture serverFuture = controlServer.start(serverOptions);
             serverFuture.sync();
@@ -303,12 +302,13 @@ class ControlTest {
                 }
             };
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
-            ControlClientConnectOptions clientOptions = ControlClientConnectOptions.builder()
-                    .address(new InetSocketAddress("127.0.0.1", actualPort))
+            InetSocketAddress rejectAddr = new InetSocketAddress("127.0.0.1", actualPort);
+            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(rejectAddr, rejectAddr, rejectAddr));
+
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(100)
-                    .pingTimeout(1000)
-                    .build();
+                    .pingTimeout(1000));
 
             CompletableFuture.runAsync(() -> {
                 try {
