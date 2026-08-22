@@ -1,11 +1,7 @@
 package top.fateironist.cross_relay_core;
 
 
-import io.netty.channel.EventLoop;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.util.concurrent.Promise;
-import io.netty.util.concurrent.Future;
+import java.util.concurrent.PriorityBlockingQueue;
 
 public class Test {
      public class ListNode {
@@ -30,29 +26,52 @@ public class Test {
      }
 
     class Solution {
-        public boolean isSubStructure(TreeNode A, TreeNode B) {
-            if (A == null || B == null) {
-                return false;
+        public int[] sortArray(int[] nums) {
+            int[] res = new int[nums.length];
+
+            for (int i = nums.length / 2 - 1; i >= 0; i--) {
+                balance(nums, i, nums.length);
             }
 
-            if (A.val == B.val && backTrack(A, B)) {
-                return true;
+            int len = nums.length;
+            for (int i = 0; i < res.length; i++) {
+                res[i] = nums[0];
+                swap(nums, 0, --len);
+                balance(nums, 0, len);
             }
 
-            return isSubStructure(A.left, B) || isSubStructure(A.right, B);
+            return res;
+        }
+
+        public void balance(int[] nums, int idx, int len) {
+            if (idx >= len) return;
+
+
+            int leftIdx = idx * 2 + 1;
+            int rightIdx = idx * 2 + 2;
+            int leftValue = leftIdx >= len ? nums[idx] : nums[leftIdx];
+            int rightValue = rightIdx >= len ? nums[idx] : nums[rightIdx];
+
+            int min = Math.min(nums[idx], Math.min(leftValue, rightValue));
+
+            if (min == nums[idx]) return;
+
+            if (min == leftValue) {
+                swap(nums, idx, leftIdx);
+                balance(nums, leftIdx, len);
+            } else if (min == rightValue) {
+                swap(nums, idx, rightIdx);
+                balance(nums, rightIdx, len);
+            }
         }
 
 
-        public boolean backTrack(TreeNode A, TreeNode B) {
-            if (B == null) {
-                return true;
-            }
-
-            if (A == null || A.val != B.val) {
-                return false;
-            }
-
-            return backTrack(A.left, B.left) && backTrack(A.right, B.right);
+        public void swap(int[] nums, int l, int r) {
+            int temp = nums[l];
+            nums[l] = nums[r];
+            nums[r] = temp;
         }
+
+
     }
 }

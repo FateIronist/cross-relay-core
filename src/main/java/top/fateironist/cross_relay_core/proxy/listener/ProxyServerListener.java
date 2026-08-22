@@ -1,43 +1,38 @@
 package top.fateironist.cross_relay_core.proxy.listener;
 
 import io.netty.channel.Channel;
-import io.netty.channel.EventLoop;
 import io.netty.util.concurrent.Future;
 import top.fateironist.cross_relay_core.Listener;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.OldTunnelContext;
 
 public class ProxyServerListener implements Listener {
 
-    public boolean beforeClientToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
+    public boolean beforeClientToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
         return true;
     }
 
-    public boolean beforeRequesterToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
+    public boolean beforeRequesterToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
         return true;
     }
 
-    public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
-        return null;
-    }
-
-    public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+    public void onRequesterRequireTunnel(OldTunnelContext context) {
         throw new UnsupportedOperationException("onRequesterRequireTunnel must be implemented");
     }
 
-    public Future<?> closeRemoteTunnel(TunnelContext context) {
+    public Future<?> closeRemoteTunnel(OldTunnelContext context) {
         throw new UnsupportedOperationException("closeRemoteTunnel must be implemented to use closeGracefully");
     }
 
-    public void onTunnelEstablished(TunnelContext context) {
+    public void onTunnelEstablished(OldTunnelContext context) {
 
     }
 
-    public void onTunnelClose(TunnelContext context) {
+    public void onTunnelClose(OldTunnelContext context) {
 
     }
 
-    public void caughtTunnelException(TunnelContext context, Throwable cause) {
+    public void caughtTunnelException(OldTunnelContext context, Throwable cause) {
 
     }
 

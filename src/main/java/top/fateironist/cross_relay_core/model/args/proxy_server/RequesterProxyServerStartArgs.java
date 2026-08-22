@@ -26,5 +26,8 @@ public class RequesterProxyServerStartArgs extends AbstractArgs {
         private ClientServiceInfo clientServiceInfo;
         private ProxyClientInfo proxyClientInfo;
         private ProxyServerInfo proxyServerInfo;
+
+        @Builder.Default
+        private int requesterTimeout = 30000L;
     }
 }

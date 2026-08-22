@@ -68,7 +68,7 @@ public class ControlClient implements Client {
 
             if (!proxyServerInfo.getAddress().isSufficient()) {
                 Promise<Void> promise = workerGroup.next().newPromise();
-                promise.setFailure(new Exception("Proxy server control address is null"));
+                promise.setFailure(new Exception("ProxyContext server control address is null"));
                 return promise;
             }
 

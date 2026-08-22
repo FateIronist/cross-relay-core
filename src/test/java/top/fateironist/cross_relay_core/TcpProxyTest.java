@@ -22,9 +22,8 @@ import top.fateironist.cross_relay_core.model.args.proxy_server.RequesterProxySe
 import top.fateironist.cross_relay_core.model.info.ClientServiceInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.ClientTunnelContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.ServerTunnelContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.server.ServerTcpTunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.OldTunnelContext;
 import top.fateironist.cross_relay_core.proxy.ProxyClient;
 import top.fateironist.cross_relay_core.proxy.ProxyServer;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyClientListener;
@@ -197,13 +196,13 @@ class TcpProxyTest {
         CountDownLatch clientCloseRemoteLatch = new CountDownLatch(1);
 
         AtomicReference<String> registeredTunnelId = new AtomicReference<>();
-        AtomicReference<TunnelContext> serverTunnelContextRef = new AtomicReference<>();
-        AtomicReference<TunnelContext> clientTunnelContextRef = new AtomicReference<>();
+        AtomicReference<OldTunnelContext> serverTunnelContextRef = new AtomicReference<>();
+        AtomicReference<OldTunnelContext> clientTunnelContextRef = new AtomicReference<>();
 
         // --- 共享隧道上下文映射 ---
-        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
         Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
@@ -226,7 +225,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     // 验证 tunnelId 非空，收集注册的隧道 ID
                     assertNotNull(id, "tunnelId should not be null on register");
                     registeredTunnelId.set(id);
@@ -237,7 +236,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     // 验证 context 的协议类型
                     assertEquals(TransportLayerProtocol.TCP, context.getTransportLayerProtocol());
                     serverRequireTunnelLatch.countDown();
@@ -249,21 +248,21 @@ class TcpProxyTest {
                             infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientTunnelMap.put(ctx.getTunnelId(), ctx);
                                     clientTunnelContextRef.compareAndSet(null, ctx);
                                     clientEstablishedLatch.countDown();
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
                                     clientCloseRemoteLatch.countDown();
-                                    ServerTunnelContext stc = (ServerTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
                                     return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                                 }
 
                                 @Override
-                                public void onTunnelClose(TunnelContext ctx) {
+                                public void onTunnelClose(OldTunnelContext ctx) {
                                     if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
                                 }
                             });
@@ -277,19 +276,19 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     serverCloseRemoteLatch.countDown();
                     ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
                     return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                 }
 
                 @Override
-                public void onTunnelEstablished(TunnelContext context) {
+                public void onTunnelEstablished(OldTunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(TunnelContext context) {
+                public void onTunnelClose(OldTunnelContext context) {
                     serverTunnelMap.remove(context.getTunnelId());
                 }
             };
@@ -379,7 +378,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     // 不应被调用
                     requireTunnelLatch.countDown();
                     return null;
@@ -442,26 +441,26 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     // 不应被调用（连接已被拒绝，不会发送 tunnelId 数据）
                     registerLatch.countDown();
                     return null;
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     // 触发 ProxyClient 连接（会被 beforeClientToServerChannelAccept 拒绝）
                     ProxyInfra infra = infraRef.get();
                     ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
                             context.getClientServiceInfo(), infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientProxyConnected.set(true);
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
                                     return ctx.closeLocal(eventLoopGroup.next());
                                 }
                             });
@@ -473,7 +472,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     return context.closeLocal(eventLoopGroup.next());
                 }
             };
@@ -535,9 +534,9 @@ class TcpProxyTest {
         CountDownLatch serverCloseRemoteLatch = new CountDownLatch(1);
         CountDownLatch clientCloseRemoteLatch = new CountDownLatch(1);
 
-        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
         Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
@@ -545,26 +544,26 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     ProxyInfra infra = infraRef.get();
                     ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
                             context.getClientServiceInfo(), infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientTunnelMap.put(ctx.getTunnelId(), ctx);
                                     clientEstablishedLatch.countDown();
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
                                     clientCloseRemoteLatch.countDown();
-                                    ServerTunnelContext stc = (ServerTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
                                     return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                                 }
 
                                 @Override
-                                public void onTunnelClose(TunnelContext ctx) {
+                                public void onTunnelClose(OldTunnelContext ctx) {
                                     clientOnCloseLatch.countDown();
                                     if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
                                 }
@@ -578,7 +577,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
                     Promise<Channel> promise = serverFutureMap.get(id);
                     if (promise != null) promise.setSuccess(channel);
@@ -586,19 +585,19 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     serverCloseRemoteLatch.countDown();
                     ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
                     return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                 }
 
                 @Override
-                public void onTunnelEstablished(TunnelContext context) {
+                public void onTunnelEstablished(OldTunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(TunnelContext context) {
+                public void onTunnelClose(OldTunnelContext context) {
                     serverOnCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }
@@ -660,9 +659,9 @@ class TcpProxyTest {
         CountDownLatch clientEstablishedLatch = new CountDownLatch(tunnelCount);
         CountDownLatch registerLatch = new CountDownLatch(tunnelCount);
 
-        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
         Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
         List<String> registeredIds = new ArrayList<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
@@ -671,25 +670,25 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     ProxyInfra infra = infraRef.get();
                     ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
                             context.getClientServiceInfo(), infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientTunnelMap.put(ctx.getTunnelId(), ctx);
                                     clientEstablishedLatch.countDown();
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
-                                    ServerTunnelContext stc = (ServerTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
+                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
                                     return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                                 }
 
                                 @Override
-                                public void onTunnelClose(TunnelContext ctx) {
+                                public void onTunnelClose(OldTunnelContext ctx) {
                                     if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
                                 }
                             });
@@ -702,7 +701,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     synchronized (registeredIds) {
                         registeredIds.add(id);
                     }
@@ -713,18 +712,18 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
                     return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                 }
 
                 @Override
-                public void onTunnelEstablished(TunnelContext context) {
+                public void onTunnelEstablished(OldTunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(TunnelContext context) {
+                public void onTunnelClose(OldTunnelContext context) {
                     serverTunnelMap.remove(context.getTunnelId());
                 }
             };
@@ -830,9 +829,9 @@ class TcpProxyTest {
 
         AtomicReference<Throwable> exceptionCauseRef = new AtomicReference<>();
 
-        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
         Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
@@ -840,31 +839,31 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     ProxyInfra infra = infraRef.get();
                     ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
                             context.getClientServiceInfo(), infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientTunnelMap.put(ctx.getTunnelId(), ctx);
                                     clientEstablishedLatch.countDown();
                                 }
 
                                 @Override
-                                public void caughtTunnelException(TunnelContext ctx, Throwable cause) {
+                                public void caughtTunnelException(OldTunnelContext ctx, Throwable cause) {
                                     exceptionCauseRef.compareAndSet(null, cause);
                                     clientExceptionLatch.countDown();
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
-                                    ServerTunnelContext stc = (ServerTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
+                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
                                     return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                                 }
 
                                 @Override
-                                public void onTunnelClose(TunnelContext ctx) {
+                                public void onTunnelClose(OldTunnelContext ctx) {
                                     clientCloseLatch.countDown();
                                     if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
                                 }
@@ -878,7 +877,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
                     Promise<Channel> promise = serverFutureMap.get(id);
                     if (promise != null) promise.setSuccess(channel);
@@ -886,18 +885,18 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
                     return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                 }
 
                 @Override
-                public void onTunnelEstablished(TunnelContext context) {
+                public void onTunnelEstablished(OldTunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(TunnelContext context) {
+                public void onTunnelClose(OldTunnelContext context) {
                     serverCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }
@@ -964,9 +963,9 @@ class TcpProxyTest {
 
         AtomicReference<Throwable> serverExceptionRef = new AtomicReference<>();
 
-        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
         Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
         AtomicReference<Channel> clientToServerChannelRef = new AtomicReference<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
@@ -975,25 +974,25 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(TunnelContext context, EventLoop eventLoop) {
+                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
                     ProxyInfra infra = infraRef.get();
                     ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
                             context.getClientServiceInfo(), infra.proxyServerInfo,
                             new ProxyClientListener() {
                                 @Override
-                                public void onTunnelEstablished(TunnelContext ctx) {
+                                public void onTunnelEstablished(OldTunnelContext ctx) {
                                     clientTunnelMap.put(ctx.getTunnelId(), ctx);
                                     clientEstablishedLatch.countDown();
                                 }
 
                                 @Override
-                                public Future<?> closeRemoteTunnel(TunnelContext ctx) {
-                                    ServerTunnelContext stc = (ServerTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
+                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
                                     return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                                 }
 
                                 @Override
-                                public void onTunnelClose(TunnelContext ctx) {
+                                public void onTunnelClose(OldTunnelContext ctx) {
                                     if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
                                 }
                             });
@@ -1006,7 +1005,7 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public TunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
                     clientToServerChannelRef.set(channel);
                     Promise<Channel> promise = serverFutureMap.get(id);
@@ -1015,24 +1014,24 @@ class TcpProxyTest {
                 }
 
                 @Override
-                public void caughtTunnelException(TunnelContext context, Throwable cause) {
+                public void caughtTunnelException(OldTunnelContext context, Throwable cause) {
                     serverExceptionRef.compareAndSet(null, cause);
                     serverExceptionLatch.countDown();
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
                     ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
                     return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
                 }
 
                 @Override
-                public void onTunnelEstablished(TunnelContext context) {
+                public void onTunnelEstablished(OldTunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(TunnelContext context) {
+                public void onTunnelClose(OldTunnelContext context) {
                     serverCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }

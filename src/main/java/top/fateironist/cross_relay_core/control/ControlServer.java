@@ -3,11 +3,14 @@ package top.fateironist.cross_relay_core.control;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.SingleThreadEventExecutor;
 import lombok.extern.slf4j.Slf4j;
 import top.fateironist.cross_relay_core.Server;
 import top.fateironist.cross_relay_core.control.handler.EventEncryptHandler;
@@ -219,7 +222,21 @@ public class ControlServer implements Server {
 
     @Override
     public Future<?> shutdown() {
-        return bossGroup.shutdownGracefully().addListener(f -> workerGroup.shutdownGracefully());
+        EventLoopGroup shutdownEventLoopGroup = new NioEventLoopGroup(1);
+        EventLoop eventLoop = shutdownEventLoopGroup.next();
+        Promise<?> promise = eventLoop.newPromise();
+        eventLoop.execute(() -> {
+            try {
+                bossGroup.shutdownGracefully().sync();
+                workerGroup.shutdownGracefully().sync();
+            } catch (InterruptedException e) {
+                promise.setFailure(e);
+            }
+
+            promise.setSuccess(null);
+        });
+
+        return promise;
     }
 
     @Override
