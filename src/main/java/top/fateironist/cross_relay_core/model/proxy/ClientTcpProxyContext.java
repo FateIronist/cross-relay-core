@@ -8,8 +8,8 @@ import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
 import java.util.List;
 
 public class ClientTcpProxyContext extends ClientProxyContext {
-    public ClientTcpProxyContext(String proxyId, TransportLayerProtocol protocol, List<ChannelHandlerContext> handlerContexts) {
-        super(proxyId, protocol, handlerContexts);
+    public ClientTcpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts) {
+        super(proxyId, TransportLayerProtocol.TCP, handlerContexts);
     }
 
     @Override
