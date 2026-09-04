@@ -1,11 +1,10 @@
-package top.fateironist.cross_relay_core.model.proxy.tunnel.client;
+package top.fateironist.cross_relay_core.model.proxy;
 
 import io.netty.channel.ChannelHandlerContext;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
-import top.fateironist.cross_relay_core.model.proxy.ClientProxyContext;
+import top.fateironist.cross_relay_core.model.control.ControlContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.ClientUdpTunnelContext;
 import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.server.ServerUdpProxyContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.server.ServerUdpTunnelContext;
 
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -16,8 +15,8 @@ import java.util.function.Consumer;
 public class ClientUdpProxyContext extends ClientProxyContext {
     private final Map<InetSocketAddress, ClientUdpTunnelContext> addressContextMap = new ConcurrentHashMap<>();
 
-    public ClientUdpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts) {
-        super(proxyId, TransportLayerProtocol.UDP, handlerContexts);
+    public ClientUdpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts, ControlContext controlContext) {
+        super(proxyId, TransportLayerProtocol.UDP, handlerContexts, controlContext);
     }
 
     @Override

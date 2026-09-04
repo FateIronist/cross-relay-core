@@ -9,8 +9,10 @@ import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.traffic.ChannelTrafficShapingHandler;
 import io.netty.util.CharsetUtil;
+import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
 import top.fateironist.cross_relay_core.Server;
-import top.fateironist.cross_relay_core.model.control.ControlEvent;
+import top.fateironist.cross_relay_core.ServerStatus;
+import top.fateironist.cross_relay_core.model.control.event.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
@@ -29,6 +31,10 @@ public class ServerInfoServer implements Server {
     private final EventLoopGroup workerGroup;
     private final ProxyServerInfo proxyServerInfo;
 
+    public volatile ServerStatus status = ServerStatus.INIT;
+
+    private Channel channel;
+
     public ServerInfoServer(EventLoopGroup workerGroup, ProxyServerInfo proxyServerInfo) {
         this.proxyServerInfo = proxyServerInfo;
         this.workerGroup = workerGroup;
@@ -36,10 +42,11 @@ public class ServerInfoServer implements Server {
     }
 
     public Future<Void> start(AbstractArgs arg) {
-        ServerInfoServerStartArgs args = (ServerInfoServerStartArgs) arg;
-        var opts = args.getOptions();
+        if (status == ServerStatus.INIT) {
+            ServerInfoServerStartArgs args = (ServerInfoServerStartArgs) arg;
+            var opts = args.getOptions();
 
-        bootstrap.group(workerGroup)
+            bootstrap.group(workerGroup)
                 .channel(NioDatagramChannel.class)
                 .handler(new ChannelInitializer<NioDatagramChannel>() {
                     @Override
@@ -74,16 +81,38 @@ public class ServerInfoServer implements Server {
                     }
                 });
 
-        return bootstrap.bind(PORT);
+            ChannelFuture channelFuture = bootstrap.bind(PORT);
+            channel = channelFuture.channel();
+            channelFuture.addListener(f -> {
+                if (f.isSuccess()) {
+                    status = ServerStatus.RUNNING;
+                }
+            });
+            return channelFuture;
+        }
+
+        return DefaultEventLoopGroup.failFuture(new Exception("Server is not in INIT state"));
     }
 
     @Override
     public Future<?> shutdown() {
-        return workerGroup.shutdownGracefully();
+        if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
+            status = ServerStatus.STOPPING;
+            return channel.close().addListener(f -> status = ServerStatus.SHUTDOWN);
+        }
+        return DefaultEventLoopGroup.emptyFuture();
     }
 
     @Override
     public void shutdownNow() {
-        workerGroup.shutdownNow();
+        if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
+            status = ServerStatus.STOPPING;
+            try {
+                channel.close().sync();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            status = ServerStatus.SHUTDOWN;
+        }
     }
 }

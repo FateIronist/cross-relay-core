@@ -11,7 +11,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -20,12 +19,12 @@ import top.fateironist.cross_relay_core.model.args.proxy_client.ProxyClientConne
 import top.fateironist.cross_relay_core.model.args.proxy_server.ClientProxyServerStartArgs;
 import top.fateironist.cross_relay_core.model.args.proxy_server.RequesterProxyServerStartArgs;
 import top.fateironist.cross_relay_core.model.info.ClientServiceInfo;
-import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.server.ServerTcpTunnelContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.OldTunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.ClientTcpTunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.ServerTcpTunnelContext;
 import top.fateironist.cross_relay_core.proxy.ProxyClient;
-import top.fateironist.cross_relay_core.proxy.ProxyServer;
+import top.fateironist.cross_relay_core.proxy.ProxyTcpServer;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyClientListener;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyServerListener;
 
@@ -43,15 +42,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * ProxyServer + ProxyClient TCP代理集成测试
- * 覆盖 ProxyServerListener 全部 8 个回调方法 和 ProxyClientListener 全部 4 个回调方法
+ * ProxyTcpServer + ProxyClient TCP代理集成测试
+ * 覆盖 ProxyServerListener 全部回调方法 和 ProxyClientListener 全部回调方法
  */
 class TcpProxyTest {
 
     @BeforeAll
     static void setupLogging() {
         LoggerContext ctx = (LoggerContext) LoggerFactory.getILoggerFactory();
-        ctx.getLogger(ProxyServer.class).setLevel(Level.DEBUG);
+        ctx.getLogger(ProxyTcpServer.class).setLevel(Level.DEBUG);
         ctx.getLogger(ProxyClient.class).setLevel(Level.DEBUG);
     }
 
@@ -110,11 +109,11 @@ class TcpProxyTest {
         ClientServiceInfo clientServiceInfo = new ClientServiceInfo(
                 new InetSocketAddress("127.0.0.1", echoPort), TransportLayerProtocol.TCP);
 
-        // 2. 创建 ProxyServer
-        ProxyServer proxyServer = new ProxyServer(group, group, serverListener);
+        // 2. 创建 ProxyTcpServer
+        ProxyTcpServer proxyTcpServer = new ProxyTcpServer(group, group, serverListener);
 
         // 3. 启动 TCP ClientProxyServer（端口 0）
-        ChannelFuture clientProxyFuture = proxyServer.startTcpClientProxyServer(
+        ChannelFuture clientProxyFuture = proxyTcpServer.startTcpClientProxyServer(
                 new ClientProxyServerStartArgs(opt -> opt.clientProxyPort(0).enableProxyTcp(true).enableProxyUdp(false)));
         clientProxyFuture.sync();
         int clientProxyPort = ((InetSocketAddress) clientProxyFuture.channel().localAddress()).getPort();
@@ -129,12 +128,12 @@ class TcpProxyTest {
                 true, false);
 
         // 5. 启动 TCP RequesterProxyServer（端口 0）
-        ChannelFuture reqFuture = proxyServer.startTcpRequesterProxyServer(
+        ChannelFuture reqFuture = proxyTcpServer.startTcpRequesterProxyServer(
                 new RequesterProxyServerStartArgs(opt -> opt.clientServiceInfo(clientServiceInfo)));
         reqFuture.sync();
         int requesterPort = ((InetSocketAddress) reqFuture.channel().localAddress()).getPort();
 
-        return new ProxyInfra(echoChannel, proxyServer, clientServiceInfo, proxyServerInfo, clientProxyPort, requesterPort);
+        return new ProxyInfra(echoChannel, proxyTcpServer, clientServiceInfo, proxyServerInfo, clientProxyPort, requesterPort);
     }
 
     /**
@@ -142,17 +141,17 @@ class TcpProxyTest {
      */
     private static class ProxyInfra {
         final Channel echoChannel;
-        final ProxyServer proxyServer;
+        final ProxyTcpServer proxyTcpServer;
         final ClientServiceInfo clientServiceInfo;
         final ProxyServerInfo proxyServerInfo;
         final int clientProxyPort;
         final int requesterPort;
 
-        ProxyInfra(Channel echoChannel, ProxyServer proxyServer,
+        ProxyInfra(Channel echoChannel, ProxyTcpServer proxyTcpServer,
                    ClientServiceInfo clientServiceInfo, ProxyServerInfo proxyServerInfo,
                    int clientProxyPort, int requesterPort) {
             this.echoChannel = echoChannel;
-            this.proxyServer = proxyServer;
+            this.proxyTcpServer = proxyTcpServer;
             this.clientServiceInfo = clientServiceInfo;
             this.proxyServerInfo = proxyServerInfo;
             this.clientProxyPort = clientProxyPort;
@@ -165,7 +164,6 @@ class TcpProxyTest {
      */
     private ProxyClient createProxyClient(EventLoopGroup group, ProxyInfra infra,
                                           String tunnelId, ProxyClientListener listener) {
-        ProxyClientInfo proxyClientInfo = new ProxyClientInfo("token");
         ProxyClient proxyClient = new ProxyClient(group, infra.clientServiceInfo,
                 infra.proxyServerInfo, listener);
         proxyClient.connect(new ProxyClientConnectArgs(tunnelId, TransportLayerProtocol.TCP, opt -> opt));
@@ -175,174 +173,130 @@ class TcpProxyTest {
     // ==================== 测试方法 ====================
 
     /**
-     * 测试基础 TCP 代理隧道全流程：
-     * 1. 搭建 Echo 服务 + ProxyServer + ProxyClient
-     * 2. 请求者连接 RequesterProxyServer，触发隧道建立
-     * 3. 验证数据透传：Requester → ProxyServer → ProxyClient → Echo → ProxyClient → ProxyServer → Requester
-     * 4. 覆盖 Listener 回调：
-     *    - ProxyServerListener: beforeRequesterToServerChannelAccept, onRequesterRequireTunnel,
-     *      onClientToServerChannelRegister, beforeClientToServerChannelAccept,
-     *      onTunnelEstablished(server), closeRemoteTunnel(server)
-     *    - ProxyClientListener: onTunnelEstablished(client), closeRemoteTunnel(client)
+     * 测试基础 TCP 代理隧道全流程
      */
     @Test
     void testBasicTcpProxyTunnel() throws Exception {
-        // --- Latch & 状态收集 ---
         CountDownLatch serverRequireTunnelLatch = new CountDownLatch(1);
         CountDownLatch serverRegisterLatch = new CountDownLatch(1);
         CountDownLatch serverEstablishedLatch = new CountDownLatch(1);
-        CountDownLatch clientEstablishedLatch = new CountDownLatch(1);
+        CountDownLatch clientEstablishedLatch = new CountDownLatch(2);
         CountDownLatch serverCloseRemoteLatch = new CountDownLatch(1);
         CountDownLatch clientCloseRemoteLatch = new CountDownLatch(1);
 
         AtomicReference<String> registeredTunnelId = new AtomicReference<>();
-        AtomicReference<OldTunnelContext> serverTunnelContextRef = new AtomicReference<>();
-        AtomicReference<OldTunnelContext> clientTunnelContextRef = new AtomicReference<>();
+        AtomicReference<TunnelContext> serverTunnelContextRef = new AtomicReference<>();
+        AtomicReference<TunnelContext> clientTunnelContextRef = new AtomicReference<>();
 
-        // --- 共享隧道上下文映射 ---
-        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
-        Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
 
         try {
-            // ========== ProxyServerListener ==========
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public boolean beforeRequesterToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
-                    // 验证协议类型为 TCP
+                public boolean beforeRequesterToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
                     assertEquals(TransportLayerProtocol.TCP, protocol);
                     return true;
                 }
 
                 @Override
-                public boolean beforeClientToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
-                    // 验证协议类型为 TCP
+                public boolean beforeClientToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
                     assertEquals(TransportLayerProtocol.TCP, protocol);
                     return true;
                 }
 
                 @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
-                    // 验证 tunnelId 非空，收集注册的隧道 ID
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     assertNotNull(id, "tunnelId should not be null on register");
                     registeredTunnelId.set(id);
                     serverRegisterLatch.countDown();
-                    Promise<Channel> promise = serverFutureMap.get(id);
-                    if (promise != null) promise.setSuccess(channel);
-                    return serverTunnelMap.get(id);
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    // 验证 context 的协议类型
+                public void onRequesterRequireTunnel(TunnelContext context) {
                     assertEquals(TransportLayerProtocol.TCP, context.getTransportLayerProtocol());
                     serverRequireTunnelLatch.countDown();
 
-                    // 触发 ProxyClient 连接（使用 infra 中正确的 proxyServerInfo）
                     ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(),
-                            infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientTunnelMap.put(ctx.getTunnelId(), ctx);
-                                    clientTunnelContextRef.compareAndSet(null, ctx);
-                                    clientEstablishedLatch.countDown();
-                                }
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientTunnelMap.put(ctx.getTunnelId(), ctx);
+                            clientTunnelContextRef.compareAndSet(null, ctx);
+                            clientEstablishedLatch.countDown();
+                        }
 
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    clientCloseRemoteLatch.countDown();
-                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
-                                    return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
-                                }
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            clientCloseRemoteLatch.countDown();
+                            ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                            return stc != null ? stc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                        }
 
-                                @Override
-                                public void onTunnelClose(OldTunnelContext ctx) {
-                                    if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
-                                }
-                            });
+                        @Override
+                        public void onTunnelClose(TunnelContext ctx) {
+                            if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
+                        }
+                    });
+
                     serverTunnelMap.put(context.getTunnelId(), context);
                     serverTunnelContextRef.compareAndSet(null, context);
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    serverFutureMap.put(context.getTunnelId(), promise);
-                    return promise;
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
                     serverCloseRemoteLatch.countDown();
-                    ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
-                    return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
+                    ClientTcpTunnelContext ctc = (ClientTcpTunnelContext) clientTunnelMap.get(context.getTunnelId());
+                    return ctc != null ? ctc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
                 }
 
                 @Override
-                public void onTunnelEstablished(OldTunnelContext context) {
+                public void onTunnelEstablished(TunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(OldTunnelContext context) {
+                public void onTunnelClose(TunnelContext context) {
                     serverTunnelMap.remove(context.getTunnelId());
                 }
             };
 
-            // ========== 搭建基础设施 ==========
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // ========== 请求者连接 ==========
             List<String> received = new ArrayList<>();
             Channel requester = startRequesterClient(eventLoopGroup, infra.requesterPort, received);
 
-            // ========== 验证阶段 ==========
-
-            // 1. 验证 onRequesterRequireTunnel 被调用
             assertTrue(serverRequireTunnelLatch.await(2, TimeUnit.SECONDS),
                     "onRequesterRequireTunnel should be called when requester connects");
-
-            // 2. 验证 onClientToServerChannelRegister 被调用（ProxyClient 连接后发送 tunnelId）
             assertTrue(serverRegisterLatch.await(2, TimeUnit.SECONDS),
                     "onClientToServerChannelRegister should be called when ProxyClient sends tunnelId");
-
-            // 3. 验证服务端隧道已就绪
-            assertTrue(serverRegisterLatch.await(2, TimeUnit.SECONDS),
-                    "Server tunnel should be ready (onClientToServerChannelRegister)");
             assertTrue(clientEstablishedLatch.await(2, TimeUnit.SECONDS),
                     "Client onTunnelEstablished should be called");
 
-            // 4. 验证 tunnelId 一致性
             String tunnelId = registeredTunnelId.get();
             assertNotNull(tunnelId, "Registered tunnelId should not be null");
 
-            // 等待隧道完全建立
             Thread.sleep(500);
 
-            // 5. 发送数据并验证 echo 回传
             requester.writeAndFlush(requester.alloc().buffer().writeBytes("Hello".getBytes(StandardCharsets.UTF_8)));
             Thread.sleep(500);
 
             assertEquals(1, received.size(), "Should have received one echo response");
             assertEquals("Hello", received.get(0), "Echo response should match sent data");
 
-            // 6. 发送第二条数据验证持续透传
             requester.writeAndFlush(requester.alloc().buffer().writeBytes("World".getBytes(StandardCharsets.UTF_8)));
             Thread.sleep(500);
 
             assertEquals(2, received.size(), "Should have received two echo responses");
             assertEquals("World", received.get(1), "Second echo response should match");
 
-            // 7. 验证隧道上下文引用正确
             assertNotNull(serverTunnelContextRef.get(), "Server tunnel context should be set");
             assertNotNull(clientTunnelContextRef.get(), "Client tunnel context should be set");
 
-            // 8. 关闭请求者，触发 closeRemoteTunnel
             requester.close().sync();
             assertTrue(serverCloseRemoteLatch.await(2, TimeUnit.SECONDS),
                     "Server closeRemoteTunnel should be called when requester closes");
@@ -356,11 +310,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试 beforeRequesterToServerChannelAccept 返回 false 拒绝请求者连接：
-     * 1. 请求者连接 RequesterProxyServer
-     * 2. beforeRequesterToServerChannelAccept 返回 false
-     * 3. 请求者连接被服务端关闭
-     * 4. onRequesterRequireTunnel 不应被调用
+     * 测试 beforeRequesterToServerChannelAccept 返回 false 拒绝请求者连接
      */
     @Test
     void testRequesterConnectionRejected() throws Exception {
@@ -372,22 +322,18 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public boolean beforeRequesterToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
-                    // 拒绝所有请求者连接
+                public boolean beforeRequesterToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
                     return false;
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    // 不应被调用
+                public void onRequesterRequireTunnel(TunnelContext context) {
                     requireTunnelLatch.countDown();
-                    return null;
                 }
             };
 
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
 
-            // 请求者连接
             Bootstrap bootstrap = new Bootstrap();
             bootstrap.group(eventLoopGroup)
                     .channel(NioSocketChannel.class)
@@ -399,15 +345,10 @@ class TcpProxyTest {
                     });
 
             Channel requester = bootstrap.connect("127.0.0.1", infra.requesterPort).sync().channel();
-
-            // 监听请求者连接关闭
             requester.closeFuture().addListener(f -> requesterClosedLatch.countDown());
 
-            // 验证请求者连接被服务端关闭
             assertTrue(requesterClosedLatch.await(2, TimeUnit.SECONDS),
                     "Requester channel should be closed by server");
-
-            // 验证 onRequesterRequireTunnel 未被调用
             assertFalse(requireTunnelLatch.await(200, TimeUnit.MILLISECONDS),
                     "onRequesterRequireTunnel should NOT be called when requester is rejected");
         } finally {
@@ -416,11 +357,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试 beforeClientToServerChannelAccept 返回 false 拒绝 ProxyClient 连接：
-     * 1. ProxyClient 连接 ClientProxyServer
-     * 2. beforeClientToServerChannelAccept 返回 false，连接被拒绝
-     * 3. 隧道无法建立（onClientToServerChannelRegister 不应被调用）
-     * 4. 请求者的隧道 Promise 无法完成
+     * 测试 beforeClientToServerChannelAccept 返回 false 拒绝 ProxyClient 连接
      */
     @Test
     void testClientProxyConnectionRejected() throws Exception {
@@ -434,53 +371,41 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public boolean beforeClientToServerChannelAccept(TransportLayerProtocol protocol, Channel channel) {
+                public boolean beforeClientToServerConnectionAccept(TransportLayerProtocol protocol, Channel serverChannel, Object remoteConnection) {
                     beforeClientAcceptLatch.countDown();
-                    // 拒绝所有 client-proxy 连接
                     return false;
                 }
 
                 @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
-                    // 不应被调用（连接已被拒绝，不会发送 tunnelId 数据）
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     registerLatch.countDown();
-                    return null;
                 }
 
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    // 触发 ProxyClient 连接（会被 beforeClientToServerChannelAccept 拒绝）
+                public void onRequesterRequireTunnel(TunnelContext context) {
                     ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(), infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientProxyConnected.set(true);
-                                }
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientProxyConnected.set(true);
+                        }
 
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    return ctx.closeLocal(eventLoopGroup.next());
-                                }
-                            });
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    // 注意：由于 client-proxy 被拒绝，此 promise 永远不会完成
-                    return promise;
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            return ctx.closeLocal();
+                        }
+                    });
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
-                    return context.closeLocal(eventLoopGroup.next());
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                    return context.closeLocal();
                 }
             };
 
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // 请求者连接（会间接触发 ProxyClient 连接）
             Bootstrap bootstrap = new Bootstrap();
             bootstrap.group(eventLoopGroup)
                     .channel(NioSocketChannel.class)
@@ -493,19 +418,11 @@ class TcpProxyTest {
 
             Channel requester = bootstrap.connect("127.0.0.1", infra.requesterPort).sync().channel();
 
-            // 验证 beforeClientToServerChannelAccept 被调用
             assertTrue(beforeClientAcceptLatch.await(2, TimeUnit.SECONDS),
                     "beforeClientToServerChannelAccept should be called");
-
-            // 等待一段时间让拒绝逻辑完成
             Thread.sleep(1000);
-
-            // 验证 onClientToServerChannelRegister 未被调用
             assertFalse(registerLatch.await(200, TimeUnit.MILLISECONDS),
                     "onClientToServerChannelRegister should NOT be called when client-proxy is rejected");
-
-            // 验证 ProxyClient 的 onTunnelEstablished 未被调用
-            // 注意：由于主类问题（TCP连接在OS层面先于handler处理成功），onTunnelEstablished仍会被调用
             assertTrue(beforeClientAcceptLatch.await(2, TimeUnit.SECONDS),
                     "beforeClientToServerChannelAccept should have been called");
 
@@ -516,13 +433,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试隧道关闭生命周期（onTunnelClose + closeRemoteTunnel）：
-     * 1. 建立完整隧道并验证数据透传
-     * 2. 关闭请求者连接
-     * 3. 验证 ProxyServerListener.onTunnelClose 被调用
-     * 4. 验证 ProxyServerListener.closeRemoteTunnel 被调用（优雅关闭远端）
-     * 5. 验证 ProxyClientListener.onTunnelClose 被调用
-     * 6. 验证 ProxyClientListener.closeRemoteTunnel 被调用（级联关闭）
+     * 测试隧道关闭生命周期
      */
     @Test
     void testTunnelCloseLifecycle() throws Exception {
@@ -534,9 +445,8 @@ class TcpProxyTest {
         CountDownLatch serverCloseRemoteLatch = new CountDownLatch(1);
         CountDownLatch clientCloseRemoteLatch = new CountDownLatch(1);
 
-        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
-        Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
@@ -544,60 +454,50 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(), infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientTunnelMap.put(ctx.getTunnelId(), ctx);
-                                    clientEstablishedLatch.countDown();
-                                }
-
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    clientCloseRemoteLatch.countDown();
-                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
-                                    return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
-                                }
-
-                                @Override
-                                public void onTunnelClose(OldTunnelContext ctx) {
-                                    clientOnCloseLatch.countDown();
-                                    if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
-                                }
-                            });
-                    serverTunnelMap.put(context.getTunnelId(), context);
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    serverFutureMap.put(context.getTunnelId(), promise);
-                    return promise;
-                }
-
-                @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
-                    Promise<Channel> promise = serverFutureMap.get(id);
-                    if (promise != null) promise.setSuccess(channel);
-                    return serverTunnelMap.get(id);
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
+                public void onRequesterRequireTunnel(TunnelContext context) {
+                    ProxyInfra infra = infraRef.get();
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientTunnelMap.put(ctx.getTunnelId(), ctx);
+                            clientEstablishedLatch.countDown();
+                        }
+
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            clientCloseRemoteLatch.countDown();
+                            ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                            return stc != null ? stc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                        }
+
+                        @Override
+                        public void onTunnelClose(TunnelContext ctx) {
+                            clientOnCloseLatch.countDown();
+                            if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
+                        }
+                    });
+                    serverTunnelMap.put(context.getTunnelId(), context);
+                }
+
+                @Override
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
                     serverCloseRemoteLatch.countDown();
-                    ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
-                    return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
+                    ClientTcpTunnelContext ctc = (ClientTcpTunnelContext) clientTunnelMap.get(context.getTunnelId());
+                    return ctc != null ? ctc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
                 }
 
                 @Override
-                public void onTunnelEstablished(OldTunnelContext context) {
+                public void onTunnelEstablished(TunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(OldTunnelContext context) {
+                public void onTunnelClose(TunnelContext context) {
                     serverOnCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }
@@ -606,7 +506,6 @@ class TcpProxyTest {
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // 建立隧道
             List<String> received = new ArrayList<>();
             Channel requester = startRequesterClient(eventLoopGroup, infra.requesterPort, received);
 
@@ -615,29 +514,20 @@ class TcpProxyTest {
             assertTrue(clientEstablishedLatch.await(2, TimeUnit.SECONDS),
                     "Client tunnel should be established");
 
-            // 验证数据透传正常
             Thread.sleep(500);
             requester.writeAndFlush(requester.alloc().buffer().writeBytes("BeforeClose".getBytes(StandardCharsets.UTF_8)));
             Thread.sleep(500);
             assertEquals(1, received.size(), "Should receive echo before close");
             assertEquals("BeforeClose", received.get(0));
 
-            // ========== 关闭请求者，触发隧道关闭链 ==========
             requester.close().sync();
 
-            // 验证 ProxyServerListener.onTunnelClose 被调用（requester channelInactive）
             assertTrue(serverOnCloseLatch.await(2, TimeUnit.SECONDS),
                     "Server onTunnelClose should be called when requester disconnects");
-
-            // 验证 ProxyServerListener.closeRemoteTunnel 被调用（优雅关闭远端 ProxyClient 侧）
             assertTrue(serverCloseRemoteLatch.await(2, TimeUnit.SECONDS),
                     "Server closeRemoteTunnel should be called to close client side");
-
-            // 验证 ProxyClientListener.closeRemoteTunnel 被调用（级联关闭）
             assertTrue(clientCloseRemoteLatch.await(2, TimeUnit.SECONDS),
                     "Client closeRemoteTunnel should be called during graceful close");
-
-            // 验证 ProxyClientListener.onTunnelClose 被调用（serviceProxy channelInactive）
             assertTrue(clientOnCloseLatch.await(2, TimeUnit.SECONDS),
                     "Client onTunnelClose should be called when tunnel is fully closed");
         } finally {
@@ -646,11 +536,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试多条并发 TCP 代理隧道：
-     * 1. 同时建立 3 条隧道
-     * 2. 验证每条隧道的 Listener 回调独立触发
-     * 3. 验证每条隧道数据透传正确（tunnelId 对应关系）
-     * 4. 验证各隧道互不干扰
+     * 测试多条并发 TCP 代理隧道
      */
     @Test
     void testMultipleTunnels() throws Exception {
@@ -659,9 +545,8 @@ class TcpProxyTest {
         CountDownLatch clientEstablishedLatch = new CountDownLatch(tunnelCount);
         CountDownLatch registerLatch = new CountDownLatch(tunnelCount);
 
-        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
-        Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
         List<String> registeredIds = new ArrayList<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
@@ -670,60 +555,50 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(), infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientTunnelMap.put(ctx.getTunnelId(), ctx);
-                                    clientEstablishedLatch.countDown();
-                                }
-
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
-                                    return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
-                                }
-
-                                @Override
-                                public void onTunnelClose(OldTunnelContext ctx) {
-                                    if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
-                                }
-                            });
-                    serverTunnelMap.put(context.getTunnelId(), context);
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    serverFutureMap.put(context.getTunnelId(), promise);
-                    return promise;
-                }
-
-                @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     synchronized (registeredIds) {
                         registeredIds.add(id);
                     }
                     registerLatch.countDown();
-                    Promise<Channel> promise = serverFutureMap.get(id);
-                    if (promise != null) promise.setSuccess(channel);
-                    return serverTunnelMap.get(id);
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
-                    ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
-                    return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
+                public void onRequesterRequireTunnel(TunnelContext context) {
+                    ProxyInfra infra = infraRef.get();
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientTunnelMap.put(ctx.getTunnelId(), ctx);
+                            clientEstablishedLatch.countDown();
+                        }
+
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                            return stc != null ? stc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                        }
+
+                        @Override
+                        public void onTunnelClose(TunnelContext ctx) {
+                            if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
+                        }
+                    });
+                    serverTunnelMap.put(context.getTunnelId(), context);
                 }
 
                 @Override
-                public void onTunnelEstablished(OldTunnelContext context) {
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                    ClientTcpTunnelContext ctc = (ClientTcpTunnelContext) clientTunnelMap.get(context.getTunnelId());
+                    return ctc != null ? ctc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                }
+
+                @Override
+                public void onTunnelEstablished(TunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(OldTunnelContext context) {
+                public void onTunnelClose(TunnelContext context) {
                     serverTunnelMap.remove(context.getTunnelId());
                 }
             };
@@ -731,7 +606,6 @@ class TcpProxyTest {
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // ========== 建立 3 条并发隧道 ==========
             List<Channel> requesters = new ArrayList<>();
             List<List<String>> receivedList = new ArrayList<>();
 
@@ -742,29 +616,19 @@ class TcpProxyTest {
                 requesters.add(requester);
             }
 
-            // ========== 验证阶段 ==========
-
-            // 1. 验证所有隧道都建立了
             assertTrue(registerLatch.await(5, TimeUnit.SECONDS),
-                    "All " + tunnelCount + " server tunnels should be ready (onClientToServerChannelRegister)");
+                    "All " + tunnelCount + " server tunnels should be ready");
             assertTrue(clientEstablishedLatch.await(5, TimeUnit.SECONDS),
                     "All " + tunnelCount + " client tunnels should be established");
 
-            // 2. 验证所有隧道都注册了 tunnelId
-            assertTrue(registerLatch.await(5, TimeUnit.SECONDS),
-                    "All " + tunnelCount + " tunnels should have registered tunnelIds");
-
-            // 3. 验证 tunnelId 唯一性
             synchronized (registeredIds) {
                 assertEquals(tunnelCount, registeredIds.size(), "Should have " + tunnelCount + " registered IDs");
                 long uniqueCount = registeredIds.stream().distinct().count();
                 assertEquals(tunnelCount, uniqueCount, "All tunnelIds should be unique");
             }
 
-            // 等待隧道完全建立
             Thread.sleep(1000);
 
-            // 4. 每条隧道发送不同数据，验证独立透传
             for (int i = 0; i < tunnelCount; i++) {
                 String msg = "Tunnel" + i + "-Data";
                 requesters.get(i).writeAndFlush(
@@ -773,7 +637,6 @@ class TcpProxyTest {
 
             Thread.sleep(1000);
 
-            // 5. 验证每条隧道收到的数据正确
             for (int i = 0; i < tunnelCount; i++) {
                 String expected = "Tunnel" + i + "-Data";
                 assertEquals(1, receivedList.get(i).size(),
@@ -782,11 +645,9 @@ class TcpProxyTest {
                         "Tunnel " + i + " echo data should match");
             }
 
-            // 6. 关闭第一条隧道，验证其他隧道不受影响
             requesters.get(0).close().sync();
             Thread.sleep(500);
 
-            // 剩余隧道继续发送数据
             for (int i = 1; i < tunnelCount; i++) {
                 String msg = "Tunnel" + i + "-AfterClose";
                 requesters.get(i).writeAndFlush(
@@ -795,7 +656,6 @@ class TcpProxyTest {
 
             Thread.sleep(500);
 
-            // 验证剩余隧道数据正确
             for (int i = 1; i < tunnelCount; i++) {
                 assertEquals(2, receivedList.get(i).size(),
                         "Tunnel " + i + " should have received two responses");
@@ -803,7 +663,6 @@ class TcpProxyTest {
                         "Tunnel " + i + " second echo should match");
             }
 
-            // 清理
             for (int i = 1; i < tunnelCount; i++) {
                 requesters.get(i).close().sync();
             }
@@ -813,10 +672,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试隧道关闭处理（onTunnelClose）：
-     * 1. 建立完整隧道
-     * 2. 关闭 Echo 服务，使 ProxyClient 的 serviceProxy 通道检测到远端关闭
-     * 3. 验证 ProxyClientListener.onTunnelClose 被调用
+     * 测试隧道异常处理
      */
     @Test
     void testTunnelExceptionHandling() throws Exception {
@@ -829,9 +685,8 @@ class TcpProxyTest {
 
         AtomicReference<Throwable> exceptionCauseRef = new AtomicReference<>();
 
-        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
-        Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         AtomicReference<ProxyInfra> infraRef = new AtomicReference<>();
@@ -839,64 +694,54 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(), infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientTunnelMap.put(ctx.getTunnelId(), ctx);
-                                    clientEstablishedLatch.countDown();
-                                }
-
-                                @Override
-                                public void caughtTunnelException(OldTunnelContext ctx, Throwable cause) {
-                                    exceptionCauseRef.compareAndSet(null, cause);
-                                    clientExceptionLatch.countDown();
-                                }
-
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
-                                    return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
-                                }
-
-                                @Override
-                                public void onTunnelClose(OldTunnelContext ctx) {
-                                    clientCloseLatch.countDown();
-                                    if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
-                                }
-                            });
-                    serverTunnelMap.put(context.getTunnelId(), context);
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    serverFutureMap.put(context.getTunnelId(), promise);
-                    return promise;
-                }
-
-                @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
-                    Promise<Channel> promise = serverFutureMap.get(id);
-                    if (promise != null) promise.setSuccess(channel);
-                    return serverTunnelMap.get(id);
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
-                    ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
-                    return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
+                public void onRequesterRequireTunnel(TunnelContext context) {
+                    ProxyInfra infra = infraRef.get();
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientTunnelMap.put(ctx.getTunnelId(), ctx);
+                            clientEstablishedLatch.countDown();
+                        }
+
+                        @Override
+                        public void caughtTunnelException(TunnelContext ctx, Throwable cause) {
+                            exceptionCauseRef.compareAndSet(null, cause);
+                            clientExceptionLatch.countDown();
+                        }
+
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                            return stc != null ? stc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                        }
+
+                        @Override
+                        public void onTunnelClose(TunnelContext ctx) {
+                            clientCloseLatch.countDown();
+                            if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
+                        }
+                    });
+                    serverTunnelMap.put(context.getTunnelId(), context);
                 }
 
                 @Override
-                public void onTunnelEstablished(OldTunnelContext context) {
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                    ClientTcpTunnelContext ctc = (ClientTcpTunnelContext) clientTunnelMap.get(context.getTunnelId());
+                    return ctc != null ? ctc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                }
+
+                @Override
+                public void onTunnelEstablished(TunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(OldTunnelContext context) {
+                public void onTunnelClose(TunnelContext context) {
                     serverCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }
@@ -905,42 +750,30 @@ class TcpProxyTest {
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // 建立隧道
             List<String> received = new ArrayList<>();
             Channel requester = startRequesterClient(eventLoopGroup, infra.requesterPort, received);
 
             assertTrue(serverRegisterLatch.await(2, TimeUnit.SECONDS),
-                    "Server tunnel should be ready (onClientToServerChannelRegister)");
+                    "Server tunnel should be ready");
             assertTrue(clientEstablishedLatch.await(2, TimeUnit.SECONDS),
                     "Client tunnel should be established");
 
-            // 验证正常数据透传
             Thread.sleep(500);
             requester.writeAndFlush(requester.alloc().buffer().writeBytes("BeforeError".getBytes(StandardCharsets.UTF_8)));
             Thread.sleep(500);
             assertEquals(1, received.size(), "Should receive echo before error");
 
-            // ========== 触发隧道关闭：关闭 Echo 服务 ==========
-            // Echo 服务关闭后，ProxyClient 的 serviceProxy 通道检测到远端关闭
-            // 触发 channelInactive → onTunnelClose
             infra.echoChannel.close().sync();
-
-            // 等待 serviceProxy 通道检测到关闭
             Thread.sleep(500);
 
-            // 尝试通过隧道发送数据（可能触发异常，因为后端服务已不可达）
             try {
                 requester.writeAndFlush(requester.alloc().buffer().writeBytes(
                         "AfterError".getBytes(StandardCharsets.UTF_8))).sync();
             } catch (Exception ignored) {
-                // 写入可能失败
             }
 
-            // Echo 服务关闭触发 serviceProxy channelInactive → closeGracefully
-            // 验证 echo 通道已关闭
             assertFalse(infra.echoChannel.isActive(),
                     "Echo channel should be inactive after close");
-            // 等待 serviceProxy 检测到关闭（通过日志中的 SERVICE-PROXY-INACTIVE 确认）
             Thread.sleep(1000);
         } finally {
             eventLoopGroup.shutdownGracefully().await(2, TimeUnit.SECONDS);
@@ -948,10 +781,7 @@ class TcpProxyTest {
     }
 
     /**
-     * 测试 ProxyServerListener.onTunnelClose 在服务端通道关闭时被调用：
-     * 1. 建立完整隧道
-     * 2. 关闭 ProxyClient 侧的 clientToServer 通道
-     * 3. 验证 ProxyServerListener.onTunnelClose 被调用
+     * 测试服务端隧道异常处理
      */
     @Test
     void testServerSideTunnelException() throws Exception {
@@ -963,9 +793,8 @@ class TcpProxyTest {
 
         AtomicReference<Throwable> serverExceptionRef = new AtomicReference<>();
 
-        Map<String, OldTunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
-        Map<String, Promise<Channel>> serverFutureMap = new ConcurrentHashMap<>();
-        Map<String, OldTunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> serverTunnelMap = new ConcurrentHashMap<>();
+        Map<String, TunnelContext> clientTunnelMap = new ConcurrentHashMap<>();
         AtomicReference<Channel> clientToServerChannelRef = new AtomicReference<>();
 
         EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
@@ -974,64 +803,54 @@ class TcpProxyTest {
         try {
             ProxyServerListener serverListener = new ProxyServerListener() {
                 @Override
-                public Future<Channel> onRequesterRequireTunnel(OldTunnelContext context, EventLoop eventLoop) {
-                    ProxyInfra infra = infraRef.get();
-                    ProxyClient proxyClient = new ProxyClient(eventLoopGroup,
-                            context.getClientServiceInfo(), infra.proxyServerInfo,
-                            new ProxyClientListener() {
-                                @Override
-                                public void onTunnelEstablished(OldTunnelContext ctx) {
-                                    clientTunnelMap.put(ctx.getTunnelId(), ctx);
-                                    clientEstablishedLatch.countDown();
-                                }
-
-                                @Override
-                                public Future<?> closeRemoteTunnel(OldTunnelContext ctx) {
-                                    ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
-                                    return stc != null ? stc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
-                                }
-
-                                @Override
-                                public void onTunnelClose(OldTunnelContext ctx) {
-                                    if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
-                                }
-                            });
-                    serverTunnelMap.put(context.getTunnelId(), context);
-                    Promise<Channel> promise = eventLoop.newPromise();
-                    proxyClient.connect(new ProxyClientConnectArgs(
-                            context.getTunnelId(), context.getTransportLayerProtocol(), opt -> opt));
-                    serverFutureMap.put(context.getTunnelId(), promise);
-                    return promise;
-                }
-
-                @Override
-                public OldTunnelContext onClientToServerChannelRegister(String id, Channel channel) {
+                public void onClientToServerChannelRegister(String id, Channel channel) {
                     serverRegisterLatch.countDown();
                     clientToServerChannelRef.set(channel);
-                    Promise<Channel> promise = serverFutureMap.get(id);
-                    if (promise != null) promise.setSuccess(channel);
-                    return serverTunnelMap.get(id);
                 }
 
                 @Override
-                public void caughtTunnelException(OldTunnelContext context, Throwable cause) {
+                public void onRequesterRequireTunnel(TunnelContext context) {
+                    ProxyInfra infra = infraRef.get();
+                    createProxyClient(eventLoopGroup, infra, context.getTunnelId(), new ProxyClientListener() {
+                        @Override
+                        public void onTunnelEstablished(TunnelContext ctx) {
+                            clientTunnelMap.put(ctx.getTunnelId(), ctx);
+                            clientEstablishedLatch.countDown();
+                        }
+
+                        @Override
+                        public Future<?> closeRemoteTunnel(TunnelContext ctx) {
+                            ServerTcpTunnelContext stc = (ServerTcpTunnelContext) serverTunnelMap.get(ctx.getTunnelId());
+                            return stc != null ? stc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
+                        }
+
+                        @Override
+                        public void onTunnelClose(TunnelContext ctx) {
+                            if (ctx != null) clientTunnelMap.remove(ctx.getTunnelId());
+                        }
+                    });
+                    serverTunnelMap.put(context.getTunnelId(), context);
+                }
+
+                @Override
+                public void caughtTunnelException(TunnelContext context, Throwable cause) {
                     serverExceptionRef.compareAndSet(null, cause);
                     serverExceptionLatch.countDown();
                 }
 
                 @Override
-                public Future<?> closeRemoteTunnel(OldTunnelContext context) {
-                    ClientTunnelContext ctc = (ClientTunnelContext) clientTunnelMap.get(context.getTunnelId());
-                    return ctc != null ? ctc.closeLocal(eventLoopGroup.next()) : eventLoopGroup.next().newPromise();
+                public Future<?> closeRemoteTunnel(TunnelContext context) {
+                    ClientTcpTunnelContext ctc = (ClientTcpTunnelContext) clientTunnelMap.get(context.getTunnelId());
+                    return ctc != null ? ctc.closeLocal() : eventLoopGroup.next().newPromise().setSuccess(null);
                 }
 
                 @Override
-                public void onTunnelEstablished(OldTunnelContext context) {
+                public void onTunnelEstablished(TunnelContext context) {
                     serverEstablishedLatch.countDown();
                 }
 
                 @Override
-                public void onTunnelClose(OldTunnelContext context) {
+                public void onTunnelClose(TunnelContext context) {
                     serverCloseLatch.countDown();
                     serverTunnelMap.remove(context.getTunnelId());
                 }
@@ -1040,30 +859,23 @@ class TcpProxyTest {
             ProxyInfra infra = setupProxyInfraFull(eventLoopGroup, serverListener);
             infraRef.set(infra);
 
-            // 建立隧道
             List<String> received = new ArrayList<>();
             Channel requester = startRequesterClient(eventLoopGroup, infra.requesterPort, received);
 
             assertTrue(serverRegisterLatch.await(2, TimeUnit.SECONDS),
-                    "Server tunnel should be ready (onClientToServerChannelRegister)");
+                    "Server tunnel should be ready");
             assertTrue(clientEstablishedLatch.await(2, TimeUnit.SECONDS),
                     "Client tunnel should be established");
 
             Thread.sleep(500);
 
-            // ========== 触发服务端隧道关闭：关闭 ProxyClient 侧的 clientToServer 通道 ==========
-            // 这会使 ProxyServer 的 serverToClient 通道检测到远端关闭
-            // 触发服务端 onTunnelClose 回调
             Channel clientToServerChannel = clientToServerChannelRef.get();
             if (clientToServerChannel != null) {
-                // 关闭 clientToServer 通道
                 clientToServerChannel.close().sync();
             }
 
-            // 关闭 clientToServer 通道后，验证通道确实关闭
             assertFalse(clientToServerChannel.isActive(),
                     "clientToServer channel should be inactive after close");
-            // 等待服务端检测到关闭
             Thread.sleep(1000);
         } finally {
             eventLoopGroup.shutdownGracefully().await(2, TimeUnit.SECONDS);

@@ -1,4 +1,4 @@
-package top.fateironist.cross_relay_core.model.control;
+package top.fateironist.cross_relay_core.model.control.event;
 
 import lombok.Data;
 

@@ -10,6 +10,7 @@ public enum ControlProtocolEventEnum implements ControlEventEnum{
     SESSION_PUBLIC_KEY,
     SESSION_SECRET_KEY,   // S→C：被RSA加密后的AES会话密钥
     SESSION_SECRET_ACK,
+    CLOSE,
     ERROR;
 
     @Override

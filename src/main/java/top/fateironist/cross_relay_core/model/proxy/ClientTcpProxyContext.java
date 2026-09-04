@@ -1,15 +1,16 @@
-package top.fateironist.cross_relay_core.model.proxy.tunnel.client;
+package top.fateironist.cross_relay_core.model.proxy;
 
 import io.netty.channel.ChannelHandlerContext;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
-import top.fateironist.cross_relay_core.model.proxy.ClientProxyContext;
+import top.fateironist.cross_relay_core.model.control.ControlContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.ClientTcpTunnelContext;
 import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
 
 import java.util.List;
 
 public class ClientTcpProxyContext extends ClientProxyContext {
-    public ClientTcpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts) {
-        super(proxyId, TransportLayerProtocol.TCP, handlerContexts);
+    public ClientTcpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts, ControlContext controlContext) {
+        super(proxyId, TransportLayerProtocol.TCP, handlerContexts, controlContext);
     }
 
     @Override

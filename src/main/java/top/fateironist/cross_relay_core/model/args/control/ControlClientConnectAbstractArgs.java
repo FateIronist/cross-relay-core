@@ -6,10 +6,12 @@ import lombok.Getter;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.AbstractOptions;
 
+import java.net.InetSocketAddress;
 import java.util.function.Function;
 
 @Getter
 public class ControlClientConnectAbstractArgs extends AbstractArgs {
+    private InetSocketAddress serverControlAddress;
     private Options options;
 
     public ControlClientConnectAbstractArgs(Function<Options.OptionsBuilder, Options.OptionsBuilder> optionsBuilder) {

@@ -3,7 +3,7 @@ package top.fateironist.cross_relay_core.control.listener;
 import io.netty.channel.Channel;
 import top.fateironist.cross_relay_core.Listener;
 import top.fateironist.cross_relay_core.model.control.ControlContext;
-import top.fateironist.cross_relay_core.model.control.ControlEvent;
+import top.fateironist.cross_relay_core.model.control.event.ControlEvent;
 
 import java.util.HashMap;
 import java.util.Map;

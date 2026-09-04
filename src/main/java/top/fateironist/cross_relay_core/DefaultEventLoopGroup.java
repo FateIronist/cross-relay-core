@@ -7,13 +7,10 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 
-import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 public class DefaultEventLoopGroup {
-    public static final EventLoopGroup GROUP = new MultiThreadIoEventLoopGroup(3, NioIoHandler.newFactory());
+    public static final EventLoopGroup GROUP = new MultiThreadIoEventLoopGroup(5, NioIoHandler.newFactory());
 
     public static <V> Promise<V> newPromise() {
         return GROUP.next().newPromise();
@@ -23,6 +20,27 @@ public class DefaultEventLoopGroup {
         EventLoop eventLoop = GROUP.next();
         Promise<V> promise = eventLoop.newPromise();
         eventLoop.execute(() -> consumer.accept(promise));
+        return promise;
+    }
+
+    public static Future<?> emptyFuture() {
+        EventLoop eventLoop = GROUP.next();
+        Promise<Void> promise = eventLoop.newPromise();
+        promise.setSuccess(null);
+        return promise;
+    }
+
+    public static Future<Void> emptyFuture(Void v) {
+        EventLoop eventLoop = GROUP.next();
+        Promise<Void> promise = eventLoop.newPromise();
+        promise.setSuccess(null);
+        return promise;
+    }
+
+    public static Future<?> failFuture(Throwable throwable) {
+        EventLoop eventLoop = GROUP.next();
+        Promise<Void> promise = eventLoop.newPromise();
+        promise.setFailure(throwable);
         return promise;
     }
 

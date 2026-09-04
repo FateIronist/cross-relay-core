@@ -8,7 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import top.fateironist.cross_relay_core.model.DeploymentMode;
-import top.fateironist.cross_relay_core.model.control.ControlEvent;
+import top.fateironist.cross_relay_core.model.control.event.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 

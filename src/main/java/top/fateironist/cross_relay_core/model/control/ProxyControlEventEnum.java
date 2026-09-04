@@ -1,6 +1,6 @@
 package top.fateironist.cross_relay_core.model.control;
 
-public enum ControlProxyEventEnum implements ControlEventEnum{
+public enum ProxyControlEventEnum implements ControlEventEnum{
     REGISTER_PROXY,
     REGISTER_PROXY_ACK,
     REQUIRE_CHANNEL,

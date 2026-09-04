@@ -10,36 +10,36 @@ import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-public class ClientTcpTunnelContext extends TunnelContext {
+public class ServerTcpTunnelContext extends TunnelContext {
     @Getter
-    private Channel serviceChannel;
+    private Channel requesterChannel;
     @Getter
     private Channel clientProxyChannel;
 
-    public ClientTcpTunnelContext(String tunnelId) {
+    public ServerTcpTunnelContext(String tunnelId) {
         super(tunnelId, TransportLayerProtocol.TCP);
     }
 
     @Override
     public Future<?> closeGracefully() {
-        return DefaultEventLoopGroup.combine(super.closeGracefully(), serviceChannel.close(), clientProxyChannel.close());
+        return DefaultEventLoopGroup.combine(super.closeGracefully(), requesterChannel.close(), clientProxyChannel.close());
     }
 
     @Override
     public Future<?> closeLocal() {
-        return DefaultEventLoopGroup.combine(super.closeLocal(), serviceChannel.close(), clientProxyChannel.close());
+        return DefaultEventLoopGroup.combine(super.closeLocal(), requesterChannel.close(), clientProxyChannel.close());
     }
 
-    public void writeToServiceAndFlush(ByteBuf msg) {
-        if (status == TunnelStatus.OPEN) serviceChannel.writeAndFlush(msg.retain());
+    public void writeToRequesterAndFlush(ByteBuf msg) {
+        if (status == TunnelStatus.OPEN) requesterChannel.writeAndFlush(msg.retain());
     }
 
     public void writeToClientProxyAndFlush(ByteBuf msg) {
         if (status == TunnelStatus.OPEN) clientProxyChannel.writeAndFlush(msg.retain());
     }
 
-    public void setServiceChannel(Channel serviceChannel) {
-        if (this.serviceChannel == null) this.serviceChannel = serviceChannel;
+    public void setRequesterChannel(Channel requesterChannel) {
+        if (this.requesterChannel == null) this.requesterChannel = requesterChannel;
         tryOpen();
     }
 
@@ -49,12 +49,11 @@ public class ClientTcpTunnelContext extends TunnelContext {
     }
 
     @Override
-    public boolean tryOpen() {
-        if (serviceChannel != null && clientProxyChannel != null) {
+    protected boolean tryOpen() {
+        if (requesterChannel != null && clientProxyChannel != null) {
             status = TunnelStatus.OPEN;
             return true;
         }
-
         return false;
     }
 }

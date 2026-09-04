@@ -1,18 +1,14 @@
-package top.fateironist.cross_relay_core.model.proxy.tunnel.client;
+package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.socket.DatagramPacket;
-import io.netty.util.concurrent.Future;
 import lombok.Getter;
-import lombok.Setter;
 import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelStatus;
 
 import java.net.InetSocketAddress;
-import java.util.function.Function;
+import java.util.concurrent.Future;
 
 public class ClientUdpTunnelContext extends TunnelContext {
     @Getter
@@ -22,15 +18,21 @@ public class ClientUdpTunnelContext extends TunnelContext {
     @Getter
     private InetSocketAddress serverProxyAddress;
 
+    private long lastActiveTime = System.currentTimeMillis();
+
+    private final long timeOut = 30000;
+
     public ClientUdpTunnelContext(String tunnelId) {
         super(tunnelId, TransportLayerProtocol.UDP);
     }
 
     public void writeToServiceAndFlush(ByteBuf msg) {
+        lastActiveTime = System.currentTimeMillis();
         if (status == TunnelStatus.OPEN) duplexChannel.writeAndFlush(new DatagramPacket(msg.retain(), serviceAddress));
     }
 
     public void writeToServerProxyAndFlush(ByteBuf msg) {
+        lastActiveTime = System.currentTimeMillis();
         if (status == TunnelStatus.OPEN) duplexChannel.writeAndFlush(new DatagramPacket(msg.retain(), serverProxyAddress));
     }
 
@@ -64,5 +66,17 @@ public class ClientUdpTunnelContext extends TunnelContext {
         }
 
         return false;
+    }
+
+    public Future<?> checkTimeout() {
+        if (isTimeout()) {
+            return closeGracefully();
+        }
+
+        return DefaultEventLoopGroup.emptyFuture();
+    }
+
+    public boolean isTimeout() {
+        return status == TunnelStatus.OPEN && System.currentTimeMillis() - lastActiveTime > timeOut;
     }
 }

@@ -1,11 +1,9 @@
 package top.fateironist.cross_relay_core.control.handler;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
-import top.fateironist.cross_relay_core.model.control.ControlEvent;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
 public class JsonDecoder<T> extends ChannelDuplexHandler {

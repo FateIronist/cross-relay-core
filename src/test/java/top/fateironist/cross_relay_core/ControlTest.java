@@ -13,7 +13,7 @@ import top.fateironist.cross_relay_core.control.listener.ControlClientListener;
 import top.fateironist.cross_relay_core.control.listener.ControlServerListener;
 import top.fateironist.cross_relay_core.model.DeploymentMode;
 import top.fateironist.cross_relay_core.model.control.ControlContext;
-import top.fateironist.cross_relay_core.model.control.ControlEvent;
+import top.fateironist.cross_relay_core.model.control.event.ControlEvent;
 import top.fateironist.cross_relay_core.model.control.ControlProtocolEventEnum;
 import top.fateironist.cross_relay_core.model.info.ProxyClientInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
