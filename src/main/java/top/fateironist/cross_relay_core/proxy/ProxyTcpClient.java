@@ -5,11 +5,10 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
 import lombok.extern.slf4j.Slf4j;
+import top.fateironist.constack.Container;
+import top.fateironist.constack.Promise;
 import top.fateironist.cross_relay_core.Client;
-import top.fateironist.cross_relay_core.ClientStatus;
 import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.proxy_client.ProxyClientConnectArgs;
@@ -26,21 +25,24 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Future;
 
 /**
- * 客户端与服务器一一对应
+ * TCP 代理客户端：顶层容器（无共享资源，load 即激活）；
+ * 每次 connect 在所属代理子容器下创建一条隧道，隧道双端（本地服务 + server-proxy）齐备才激活。
+ * Listener 为纯通知钩子，不参与状态机与资源回收。
  */
 @Slf4j
-public class ProxyTcpClient implements Client {
+public class ProxyTcpClient extends Container implements Client {
     private final InetSocketAddress serverProxyRequestAddress;
     private final EventLoopGroup workerGroup;
     private final ProxyClientListener listener;
 
+    // 路由索引：proxyId -> 代理容器；索引项随容器销毁经 Effect 移除
     private final Map<String, ClientTcpProxyContext> proxyContextMap = new ConcurrentHashMap<>();
 
-    public volatile ClientStatus status = ClientStatus.INIT;
-
     public ProxyTcpClient(InetSocketAddress serverProxyRequestAddress, EventLoopGroup workerGroup, ProxyClientListener listener) {
+        super();
         this.serverProxyRequestAddress = serverProxyRequestAddress;
         this.workerGroup = workerGroup;
         this.listener = listener;
@@ -49,9 +51,29 @@ public class ProxyTcpClient implements Client {
     @Override
     public Future<Void> connect(AbstractArgs arg) {
         ProxyClientConnectArgs args = (ProxyClientConnectArgs) arg;
-        Promise<Void> promise = workerGroup.next().newPromise();
+        Promise<Void> promise = new Promise<>();
 
+        // 顶层容器仅首次 connect 前需要激活（无共享资源）；此后每次 connect 创建隧道
+        if (state() == State.PENDING) {
+            load();
+        }
+
+        Thread.startVirtualThread(() -> {
+            try {
+                connectTunnel(args);
+                promise.setSuccess(null);
+            } catch (Exception e) {
+                promise.setFailure(e);
+            }
+        });
+
+        return promise;
+    }
+
+    /** 创建代理容器（若不存在）与隧道，并同时建立本地服务与 server-proxy 两端连接 */
+    private void connectTunnel(ProxyClientConnectArgs args) {
         ClientTcpProxyContext proxyContext = createContext(args.getProxyId(), args.getControlContext());
+        proxyContext.load();
 
         ClientTcpTunnelContext tunnelContext = (ClientTcpTunnelContext) proxyContext.newTunnelContext(args.getTunnelId());
 
@@ -84,7 +106,7 @@ public class ProxyTcpClient implements Client {
                             }
 
                             @Override
-                            public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+                            public void channelInactive(ChannelHandlerContext ctx) {
                                 ClientTcpTunnelContext context = (ClientTcpTunnelContext) ctx.channel().attr(TunnelContext.KEY).get();
                                 log.debug("[ProxyClient] TCP [{}，L:{}，R:{}] SERVICE-PROXY-INACTIVE",
                                         context != null ? context.getTunnelId() : tunnelContext.getTunnelId(),
@@ -129,7 +151,7 @@ public class ProxyTcpClient implements Client {
                             }
 
                             @Override
-                            public void channelActive(ChannelHandlerContext ctx) {
+                            public void channelActive(ChannelHandlerContext ctx) throws Exception {
                                 tunnelContext.setClientProxyChannel(ctx.channel());
 
                                 // 1. 发送初始认证信息
@@ -173,84 +195,58 @@ public class ProxyTcpClient implements Client {
         log.debug("[ProxyClient] [{}] Connecting service-proxy to {} and server-connecter to {}",
                 tunnelContext.getTunnelId(), args.getServiceAddress(), serverProxyRequestAddress);
 
-        Thread.ofVirtual().start(() -> {
-            try {
-                serviceProxyBootstrap.connect(args.getServiceAddress()).sync();
-                serverConnecterBootstrap.connect(serverProxyRequestAddress).sync();
-            } catch (InterruptedException e) {
-                promise.setFailure(e);
-                return;
-            }
-
-            listener.onTunnelEstablished(tunnelContext);
-            promise.setSuccess(null);
-        });
-
-        promise.addListener(f -> {
-            if (f.isSuccess()) {
-                status = ClientStatus.OPEN;
-            }
-        });
-
-        return promise;
+        try {
+            serviceProxyBootstrap.connect(args.getServiceAddress()).sync();
+            serverConnecterBootstrap.connect(serverProxyRequestAddress).sync();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
     }
 
-    public Future<?> closeProxy(String proxyId) {
-        if (status == ClientStatus.OPEN) {
-            return proxyContextMap.get(proxyId).close();
+    public java.util.concurrent.Future<?> closeProxy(String proxyId) {
+        ClientTcpProxyContext context = proxyContextMap.get(proxyId);
+        if (context == null) {
+            return DefaultEventLoopGroup.failFuture(new IllegalStateException("unknown proxyId: " + proxyId));
         }
-        return DefaultEventLoopGroup.failFuture(new Exception("Proxy is not open"));
+        return context.close();
     }
 
     @Override
-    public Future<?> close() {
-        if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
-            status = ClientStatus.CLOSING;
-            Promise<?> promise = DefaultEventLoopGroup.newPromise();
-
-            Thread.ofVirtual().start(() -> {
-                proxyContextMap.forEach((k, v) -> {
-                    try {
-                        v.close().sync();
-                    } catch (Exception e) {
-                        promise.setFailure(e);
-                    }
-                });
-            });
-            promise.addListener(f -> status = ClientStatus.CLOSED);
-            return promise;
-        }
-
-        return DefaultEventLoopGroup.emptyFuture();
+    public java.util.concurrent.Future<?> close() {
+        return disposal();
     }
 
     @Override
     public void closeNow() {
-        if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
-            status = ClientStatus.CLOSING;
-            proxyContextMap.forEach((k, v) -> {
-                try {
-                    v.close();
-                } catch (Exception e) {
-
-                }
-            });
-            status = ClientStatus.CLOSED;
+        try {
+            disposal().get();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
+    /**
+     * 取得或创建代理子容器并登记路由索引；索引项随容器销毁经 Effect 移除，避免悬挂引用。
+     */
     public ClientTcpProxyContext createContext(String proxyId, ControlContext controlContext) {
-        ClientTcpProxyContext context = proxyContextMap.computeIfAbsent(proxyId, k -> {
-            ClientTcpProxyContext newContext = new ClientTcpProxyContext(k, new ArrayList<>(), controlContext);
-            decorateContext(newContext);
-            return newContext;
+        return proxyContextMap.computeIfAbsent(proxyId, k -> {
+            try {
+                ClientTcpProxyContext context = (ClientTcpProxyContext) child(k, new ArrayList<>(), controlContext).get();
+                context.effect(c -> proxyContextMap.remove(k));
+                return context;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         });
-        return context;
     }
-    
-    public void decorateContext(ClientTcpProxyContext context) {
-        context.setCloseProxyHook(ctx -> {
-            proxyContextMap.remove(ctx.getProxyId());
-        });
+
+    @Override
+    protected Container createChild(Container parent, Object... args) {
+        String proxyId = (String) args[0];
+        @SuppressWarnings("unchecked")
+        java.util.List<ChannelHandlerContext> handlerContexts = (java.util.List<ChannelHandlerContext>) args[1];
+        ControlContext controlContext = (ControlContext) args[2];
+        return new ClientTcpProxyContext(parent, proxyId, handlerContexts, controlContext);
     }
 }

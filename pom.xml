@@ -63,7 +63,15 @@
             <version>3.2.4</version>
             <scope>compile</scope>
         </dependency>
-	</dependencies>
+
+        <!-- 容器状态管理框架 -->
+        <dependency>
+            <groupId>top.fateironist</groupId>
+            <artifactId>constack</artifactId>
+            <version>0.0.2-SNAPSHOT</version>
+        </dependency>
+
+    </dependencies>
 
 	<build>
 		<plugins>

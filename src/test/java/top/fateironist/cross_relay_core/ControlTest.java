@@ -24,6 +24,7 @@ import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -47,7 +48,7 @@ class ControlTest {
      * 1. 启动 ControlServer
      * 2. ControlClient 连接
      * 3. RSA公钥交换 → AES密钥协商
-     * 4. 验证加密通道建立成功（controlChannelId、proxyServerInfo）
+     * 4. 验证加密通道建立成功（controlId、proxyServerInfo）
      * 5. 验证消息收发（CLIENT_INFO → SERVER_INFO）
      * 6. 验证 PING/PONG 心跳（latency >= 0）
      */
@@ -98,9 +99,8 @@ class ControlTest {
                     .maxConnections(10)
                     .pingTimeout(1000));
 
-            ChannelFuture serverFuture = controlServer.start(serverOptions);
-            serverFuture.sync();
-            int actualPort = ((InetSocketAddress) serverFuture.channel().localAddress()).getPort();
+            controlServer.start(serverOptions).get();
+            int actualPort = ((InetSocketAddress) controlServer.getServerChannel().localAddress()).getPort();
 
             // ========== 启动 ControlClient ==========
             ProxyClientInfo proxyClientInfo = new ProxyClientInfo();
@@ -120,12 +120,12 @@ class ControlTest {
             });
 
             InetSocketAddress serverAddr = new InetSocketAddress("127.0.0.1", actualPort);
-            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(serverAddr, serverAddr, serverAddr));
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
             ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(50)
                     .pingTimeout(1000));
+            clientOptions.setServerControlAddress(serverAddr);
 
             controlClient.connect(clientOptions).get();
 
@@ -147,10 +147,10 @@ class ControlTest {
             assertTrue(clientPermitLatch.await(1, TimeUnit.SECONDS),
                     "Client should have been permitted");
 
-            // 5. 验证 controlChannelId 和 proxyServerInfo 已设置
+            // 5. 验证 controlId 和 proxyServerInfo 已设置
             ControlContext clientCtx = clientContextRef.get();
             assertNotNull(clientCtx, "Client context should exist");
-            assertNotNull(clientCtx.getControlChannelId(), "Client controlChannelId should be set after permit");
+            assertNotNull(clientCtx.getControlId(), "Client controlId should be set after permit");
             assertNotNull(clientCtx.getProxyServerInfo().getServerName(),
                     "Client proxyServerInfo should be populated from server");
 
@@ -176,6 +176,8 @@ class ControlTest {
             controlServer.shutdown();
         } finally {
             shutdownGroup(clientWorkerGroup);
+            shutdownGroup(serverWorkerGroup);
+            shutdownGroup(serverBossGroup);
         }
     }
 
@@ -183,7 +185,7 @@ class ControlTest {
      * 测试服务端拒绝连接（beforePermit 返回 false）：
      * 1. 握手完成后 beforePermit 拒绝
      * 2. 客户端收到 deny 回调
-     * 3. 连接被关闭
+     * 3. connect Future 以失败完成，连接被关闭
      */
     @Test
     void testConnectionDeniedByServer() throws Exception {
@@ -211,9 +213,8 @@ class ControlTest {
                     .maxConnections(10)
                     .pingTimeout(1000));
 
-            ChannelFuture serverFuture = controlServer.start(serverOptions);
-            serverFuture.sync();
-            int actualPort = ((InetSocketAddress) serverFuture.channel().localAddress()).getPort();
+            controlServer.start(serverOptions).get();
+            int actualPort = ((InetSocketAddress) controlServer.getServerChannel().localAddress()).getPort();
 
             ProxyClientInfo proxyClientInfo = new ProxyClientInfo();
             proxyClientInfo.setId("test-client-deny");
@@ -229,16 +230,22 @@ class ControlTest {
                     clientCloseLatch.countDown();
                 }
             };
-            
-            InetSocketAddress denyAddr = new InetSocketAddress("127.0.0.1", actualPort);
-            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(denyAddr, denyAddr, denyAddr));
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            InetSocketAddress denyAddr = new InetSocketAddress("127.0.0.1", actualPort);
+
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
             ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(100)
                     .pingTimeout(1000));
-            
-            controlClient.connect(clientOptions).get();
+            clientOptions.setServerControlAddress(denyAddr);
+
+            // 被拒绝：connect 以失败完成
+            try {
+                controlClient.connect(clientOptions).get();
+                fail("connect should have failed when denied by server");
+            } catch (ExecutionException expected) {
+                // 预期路径：SecurityException（deny）或连接被重置
+            }
 
             // 验证客户端被拒绝
             assertTrue(clientDenyLatch.await(1, TimeUnit.SECONDS),
@@ -249,17 +256,19 @@ class ControlTest {
             controlServer.shutdown();
         } finally {
             shutdownGroup(clientWorkerGroup);
+            shutdownGroup(serverWorkerGroup);
+            shutdownGroup(serverBossGroup);
         }
     }
 
     /**
-     * 测试 beforeConnect 拒绝连接（IP封禁等场景）：
+     * 测试 beforeAccept 拒绝连接（IP封禁等场景）：
      * 1. TCP连接建立后被服务端拒绝
      * 2. afterAccept 不应被调用
      * 3. 客户端连接应被关闭
      */
     @Test
-    void testBeforeConnectRejection() throws Exception {
+    void testBeforeAcceptRejection() throws Exception {
         CountDownLatch afterAcceptLatch = new CountDownLatch(1);
         CountDownLatch clientCloseLatch = new CountDownLatch(1);
 
@@ -289,9 +298,8 @@ class ControlTest {
                     .maxConnections(10)
                     .pingTimeout(1000));
 
-            ChannelFuture serverFuture = controlServer.start(serverOptions);
-            serverFuture.sync();
-            int actualPort = ((InetSocketAddress) serverFuture.channel().localAddress()).getPort();
+            controlServer.start(serverOptions).get();
+            int actualPort = ((InetSocketAddress) controlServer.getServerChannel().localAddress()).getPort();
 
             ProxyClientInfo proxyClientInfo = new ProxyClientInfo();
             proxyClientInfo.setId("test-client-reject");
@@ -303,12 +311,12 @@ class ControlTest {
             };
 
             InetSocketAddress rejectAddr = new InetSocketAddress("127.0.0.1", actualPort);
-            proxyServerInfo.setAddress(new ProxyServerInfo.ProxyServerAddress(rejectAddr, rejectAddr, rejectAddr));
 
-            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, proxyServerInfo, clientListener);
+            ControlClient controlClient = new ControlClient(clientWorkerGroup, proxyClientInfo, clientListener);
             ControlClientConnectAbstractArgs clientOptions = new ControlClientConnectAbstractArgs(opts -> opts
                     .pingInterval(100)
                     .pingTimeout(1000));
+            clientOptions.setServerControlAddress(rejectAddr);
 
             CompletableFuture.runAsync(() -> {
                 try {
@@ -317,9 +325,9 @@ class ControlTest {
                 }
             });
 
-            // afterAccept 不应被调用（连接在 beforeConnect 阶段被拒绝）
+            // afterAccept 不应被调用（连接在 beforeAccept 阶段被拒绝）
             assertFalse(afterAcceptLatch.await(500, TimeUnit.MILLISECONDS),
-                    "afterAccept should NOT have been called when beforeConnect returns false");
+                    "afterAccept should NOT have been called when beforeAccept returns false");
 
             // 客户端连接应被服务端关闭
             assertTrue(clientCloseLatch.await(1, TimeUnit.SECONDS),
@@ -328,6 +336,8 @@ class ControlTest {
             controlServer.shutdown();
         } finally {
             shutdownGroup(clientWorkerGroup);
+            shutdownGroup(serverWorkerGroup);
+            shutdownGroup(serverBossGroup);
         }
     }
 

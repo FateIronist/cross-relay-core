@@ -18,8 +18,8 @@ public class OriginalRequesterInfo {
     private long timestamp;
 
     public OriginalRequesterInfo(InetSocketAddress inetSocketAddress, TransportLayerProtocol transportLayerProtocol) {
-        this.address = address;
-        this.protocol = protocol;
+        this.address = inetSocketAddress;
+        this.protocol = transportLayerProtocol;
         this.isAlive = true;
         this.timestamp = System.currentTimeMillis();
     }

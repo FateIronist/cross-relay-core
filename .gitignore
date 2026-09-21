@@ -37,3 +37,8 @@ logs/
 docs/
 .superpowers/
 .claude/worktrees/
+
+### Local scratch ###
+# CodeGraph 代码索引
+.codegraph/
+# 版本查询时残留的 GitHub API 响应

@@ -7,11 +7,12 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import top.fateironist.constack.Container;
 import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
+import top.fateironist.cross_relay_core.FutureBridge;
 import top.fateironist.cross_relay_core.Server;
-import top.fateironist.cross_relay_core.ServerStatus;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.proxy_server.ClientProxyServerStartArgs;
@@ -19,9 +20,9 @@ import top.fateironist.cross_relay_core.model.args.proxy_server.RequesterProxySe
 import top.fateironist.cross_relay_core.model.control.ControlContext;
 import top.fateironist.cross_relay_core.model.control.event.CommonInfo;
 import top.fateironist.cross_relay_core.model.proxy.ProxyContext;
-import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
 import top.fateironist.cross_relay_core.model.proxy.ServerTcpProxyContext;
 import top.fateironist.cross_relay_core.model.proxy.tunnel.ServerTcpTunnelContext;
+import top.fateironist.cross_relay_core.model.proxy.tunnel.TunnelContext;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyServerListener;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
@@ -29,37 +30,49 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * TCP 代理服务端：顶层容器，load = 绑定共享的 client-proxy 监听端口即激活；
+ * 每个 requester 监听端口对应一个 ServerTcpProxyContext 子容器，随控制连接级联销毁。
+ * Listener 为纯通知钩子，不参与状态机与资源回收。
+ */
 @Slf4j
-public class ProxyTcpServer implements Server {
+public class ProxyTcpServer extends Container implements Server {
     private final EventLoopGroup bossGroup;
     private final EventLoopGroup workerGroup;
     private final ProxyServerListener listener;
 
+    // 路由索引：proxyId -> 代理容器；索引项随容器销毁经 Effect 移除
     private final Map<String, ServerTcpProxyContext> proxyContextMap = new ConcurrentHashMap<>();
 
-    public volatile ServerStatus status = ServerStatus.INIT;
+    /** 共享的 client-proxy 监听 channel（本容器绑定的 Netty Channel） */
+    @Getter
+    private volatile Channel clientProxyChannel;
 
     public ProxyTcpServer(EventLoopGroup bossGroup, EventLoopGroup workerGroup, ProxyServerListener listener) {
+        super();
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.listener = listener;
+
+        // Effect：关闭共享 client-proxy 监听 channel（本容器绑定持有，外部注入的 EventLoopGroup 不清理）
+        effect(c -> {
+            Channel channel = clientProxyChannel;
+            if (channel != null) {
+                channel.close();
+            }
+        });
     }
 
     @Override
-    public Future<Void> start(AbstractArgs arg) {
-        if (status == ServerStatus.INIT) {
-            ClientProxyServerStartArgs args = (ClientProxyServerStartArgs) arg;
-            return startTcpClientProxyServer(args).addListener(f -> {
-                status = ServerStatus.RUNNING;
-            });
-        }
-
-        return DefaultEventLoopGroup.failFuture(new Exception("Server is not in INIT state"));
+    public java.util.concurrent.Future<Void> start(AbstractArgs arg) {
+        return FutureBridge.bridge(load(arg), null);
     }
 
+    @Override
+    protected java.util.concurrent.Future<Object> start(Object... args) {
+        ClientProxyServerStartArgs serverArgs = (ClientProxyServerStartArgs) args[0];
+        var options = serverArgs.getOptions();
 
-    public ChannelFuture startTcpClientProxyServer(ClientProxyServerStartArgs args) {
-        var options = args.getOptions();
         ServerBootstrap tcpClientProxyBootstrap = new ServerBootstrap();
         tcpClientProxyBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
@@ -90,7 +103,7 @@ public class ProxyTcpServer implements Server {
                         ChannelPipeline pipeline = ch.pipeline();
                         pipeline.addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                             @Override
-                            protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+                            protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
                                 ServerTcpProxyContext proxyContext = (ServerTcpProxyContext) ctx.channel().attr(ProxyContext.KEY).get();
                                 ServerTcpTunnelContext tunnelContext = (ServerTcpTunnelContext) ctx.channel().attr(TunnelContext.KEY).get();
 
@@ -158,14 +171,23 @@ public class ProxyTcpServer implements Server {
                 });
 
         log.debug("[ProxyServer] Binding TCP client-proxy server to port {}", options.getClientProxyPort());
-        return tcpClientProxyBootstrap.bind(options.getClientProxyPort());
+        top.fateironist.constack.Promise<Object> promise = new top.fateironist.constack.Promise<>();
+        ChannelFuture bindFuture = tcpClientProxyBootstrap.bind(options.getClientProxyPort());
+        bindFuture.addListener(f -> {
+            if (f.isSuccess()) {
+                clientProxyChannel = bindFuture.channel();
+                promise.setSuccess(null);
+            } else {
+                promise.setFailure(f.cause());
+            }
+        });
+        return promise;
     }
 
+    /**
+     * 启动一个 requester 监听端口并创建对应代理子容器；requester 注册经超时看护，不阻塞事件循环。
+     */
     public ChannelFuture startTcpRequesterProxyServer(RequesterProxyServerStartArgs args) {
-        if (status != ServerStatus.RUNNING) {
-            return DefaultEventLoopGroup.failFuture(new Exception("Server is not in RUNNING state"));
-        }
-
         var options = args.getOptions();
         ServerBootstrap reqBootstrap = new ServerBootstrap();
         reqBootstrap.group(bossGroup, workerGroup)
@@ -186,13 +208,14 @@ public class ProxyTcpServer implements Server {
                                     context.getTunnelId(), childChannel.localAddress(), childChannel.remoteAddress());
 
                             Future<Object> future = proxyContext.registerRequester(context.getTunnelId(), childChannel);
-                            try {
-                                future.get();
-                                log.debug("[ProxyServer] TCP [{}，L:{}，R:{}] TUNNEL-ESTABLISHED",
-                                        context.getTunnelId(), childChannel.localAddress(), childChannel.remoteAddress());
-                            } catch (Exception e) {
-                                log.debug("[ProxyServer] TCP [{}] TUNNEL-ESTABLISH-FAILED", context.getTunnelId(), e);
-                            }
+                            future.addListener(f -> {
+                                if (f.isSuccess()) {
+                                    log.debug("[ProxyServer] TCP [{}，L:{}，R:{}] TUNNEL-ESTABLISHED",
+                                            context.getTunnelId(), childChannel.localAddress(), childChannel.remoteAddress());
+                                } else {
+                                    log.debug("[ProxyServer] TCP [{}] TUNNEL-ESTABLISH-FAILED", context.getTunnelId(), f.cause());
+                                }
+                            });
 
                             ctx.fireChannelRead(msg);
                         } else {
@@ -203,8 +226,10 @@ public class ProxyTcpServer implements Server {
 
                     @Override
                     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                        // 创建代理子容器并启动其生命周期（请求监听 channel 由本方法所属 Server 持有并注册回收）
                         ServerTcpProxyContext serverTcpProxyContext = createContext(ProxyContext.generateProxyId(), List.of(ctx), args.getControlContext());
                         ctx.channel().attr(ProxyContext.KEY).set(serverTcpProxyContext);
+                        serverTcpProxyContext.load(args);
 
                         super.channelActive(ctx);
                     }
@@ -267,60 +292,48 @@ public class ProxyTcpServer implements Server {
         return reqBootstrap.bind(0);
     }
 
-    public Future<?> closeProxy(String proxyId) {
-        return proxyContextMap.get(proxyId).close();
+    public java.util.concurrent.Future<?> closeProxy(String proxyId) {
+        ServerTcpProxyContext context = proxyContextMap.get(proxyId);
+        if (context == null) {
+            return DefaultEventLoopGroup.failFuture(new IllegalStateException("unknown proxyId: " + proxyId));
+        }
+        return context.close();
     }
 
     @Override
-    public Future<?> shutdown() {
-        if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
-            status = ServerStatus.STOPPING;
-            Promise<?> promise = DefaultEventLoopGroup.newPromise();
-
-            Thread.ofVirtual().start(() -> {
-                proxyContextMap.forEach((k, v) -> {
-                    try {
-                        v.close().sync();
-                    } catch (Exception e) {
-                        promise.setFailure(e);
-                    }
-                });
-            });
-            promise.addListener(f -> status = ServerStatus.SHUTDOWN);
-
-            return promise;
-        }
-        return DefaultEventLoopGroup.emptyFuture();
+    public java.util.concurrent.Future<?> shutdown() {
+        return disposal();
     }
 
     @Override
     public void shutdownNow() {
-        if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
-            status = ServerStatus.STOPPING;
-            proxyContextMap.forEach((k, v) -> {
-                try {
-                    v.close();
-                } catch (Exception e) {
-
-                }
-            });
-            status = ServerStatus.SHUTDOWN;
+        try {
+            disposal().get();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
-
     }
 
+    /**
+     * 创建代理子容器并登记路由索引；索引项随容器销毁经 Effect 移除，避免悬挂引用。
+     */
     public ServerTcpProxyContext createContext(String proxyId, List<ChannelHandlerContext> handlerContexts, ControlContext controlContext) {
-        ServerTcpProxyContext context = proxyContextMap.computeIfAbsent(proxyId, k -> {
-            ServerTcpProxyContext newContext = new ServerTcpProxyContext(proxyId, handlerContexts, controlContext);
-            decorateContext(newContext);
-            return newContext;
-        });
-        return context;
+        try {
+            ServerTcpProxyContext context = (ServerTcpProxyContext) child(proxyId, handlerContexts, controlContext).get();
+            proxyContextMap.put(proxyId, context);
+            context.effect(c -> proxyContextMap.remove(proxyId));
+            return context;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    public void decorateContext(ServerTcpProxyContext context) {
-        context.setCloseProxyHook(ctx -> {
-            proxyContextMap.remove(ctx.getProxyId());
-        });
+    @Override
+    protected Container createChild(Container parent, Object... args) {
+        String proxyId = (String) args[0];
+        @SuppressWarnings("unchecked")
+        List<ChannelHandlerContext> handlerContexts = (List<ChannelHandlerContext>) args[1];
+        ControlContext controlContext = (ControlContext) args[2];
+        return new ServerTcpProxyContext(parent, proxyId, handlerContexts, controlContext);
     }
 }

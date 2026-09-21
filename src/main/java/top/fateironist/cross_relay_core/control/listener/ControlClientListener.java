@@ -45,11 +45,10 @@ public class ControlClientListener implements Listener {
     }
 
     /**
-     * 当channel超时未读写时，进行一些操作
+     * 当channel超时未读写时，进行一些操作；容器销毁由状态机完成，此处仅通知
      * @param context
      */
     public void onTimeOut(ControlContext context) {
-        context.close();
     }
 
     /**

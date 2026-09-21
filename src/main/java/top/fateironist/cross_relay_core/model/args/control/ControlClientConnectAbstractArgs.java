@@ -3,6 +3,7 @@ package top.fateironist.cross_relay_core.model.args.control;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
+import lombok.Setter;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.AbstractOptions;
 
@@ -11,6 +12,8 @@ import java.util.function.Function;
 
 @Getter
 public class ControlClientConnectAbstractArgs extends AbstractArgs {
+    /** 服务端控制通道地址，建连目标 */
+    @Setter
     private InetSocketAddress serverControlAddress;
     private Options options;
 

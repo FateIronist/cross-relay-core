@@ -2,13 +2,9 @@ package top.fateironist.cross_relay_core.model.proxy.tunnel;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
-import io.netty.util.concurrent.Future;
 import lombok.Getter;
-import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
+import top.fateironist.constack.Container;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
-
-import java.util.function.Consumer;
-import java.util.function.Function;
 
 public class ClientTcpTunnelContext extends TunnelContext {
     @Getter
@@ -16,45 +12,38 @@ public class ClientTcpTunnelContext extends TunnelContext {
     @Getter
     private Channel clientProxyChannel;
 
-    public ClientTcpTunnelContext(String tunnelId) {
-        super(tunnelId, TransportLayerProtocol.TCP);
-    }
-
-    @Override
-    public Future<?> closeGracefully() {
-        return DefaultEventLoopGroup.combine(super.closeGracefully(), serviceChannel.close(), clientProxyChannel.close());
-    }
-
-    @Override
-    public Future<?> closeLocal() {
-        return DefaultEventLoopGroup.combine(super.closeLocal(), serviceChannel.close(), clientProxyChannel.close());
+    public ClientTcpTunnelContext(Container parent, String tunnelId) {
+        super(parent, tunnelId, TransportLayerProtocol.TCP);
     }
 
     public void writeToServiceAndFlush(ByteBuf msg) {
-        if (status == TunnelStatus.OPEN) serviceChannel.writeAndFlush(msg.retain());
+        if (state() == State.ACTIVE) serviceChannel.writeAndFlush(msg.retain());
     }
 
     public void writeToClientProxyAndFlush(ByteBuf msg) {
-        if (status == TunnelStatus.OPEN) clientProxyChannel.writeAndFlush(msg.retain());
+        if (state() == State.ACTIVE) clientProxyChannel.writeAndFlush(msg.retain());
     }
 
     public void setServiceChannel(Channel serviceChannel) {
-        if (this.serviceChannel == null) this.serviceChannel = serviceChannel;
+        if (this.serviceChannel == null) {
+            this.serviceChannel = serviceChannel;
+            // Effect：关闭本地服务侧连接（本容器持有的 Netty Channel）
+            effect(c -> serviceChannel.close());
+        }
         tryOpen();
     }
 
     public void setClientProxyChannel(Channel clientProxyChannel) {
-        if (this.clientProxyChannel == null) this.clientProxyChannel = clientProxyChannel;
+        if (this.clientProxyChannel == null) {
+            this.clientProxyChannel = clientProxyChannel;
+            // Effect：关闭 client-proxy 侧连接（本容器持有的 Netty Channel）
+            effect(c -> clientProxyChannel.close());
+        }
         tryOpen();
     }
 
     @Override
-    public boolean tryOpen() {
-        if (serviceChannel != null && clientProxyChannel != null) {
-            status = TunnelStatus.OPEN;
-            return true;
-        }
-
-        return false;
+    protected boolean isBothEndsReady() {
+        return serviceChannel != null && clientProxyChannel != null;
     }
 }

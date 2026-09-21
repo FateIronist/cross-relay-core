@@ -2,13 +2,14 @@ package top.fateironist.cross_relay_core.proxy;
 
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import lombok.extern.slf4j.Slf4j;
 import top.fateironist.cross_relay_core.Server;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.proxy_server.ClientProxyServerStartArgs;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyServerListener;
+
+import java.util.concurrent.Future;
 
 
 @Slf4j
@@ -45,8 +46,8 @@ public class ProxyServer implements Server {
                 Future<Void> tcpFuture = proxyTcpServer.start(arg);
                 Future<Void> udpFuture = proxyUdpServer.start(arg);
                 try {
-                    tcpFuture.sync();
-                    udpFuture.sync();
+                    tcpFuture.get();
+                    udpFuture.get();
                 } catch (Exception e) {
                     promise.setFailure(e);
                     return;

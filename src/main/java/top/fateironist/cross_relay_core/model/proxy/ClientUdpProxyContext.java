@@ -1,6 +1,7 @@
 package top.fateironist.cross_relay_core.model.proxy;
 
 import io.netty.channel.ChannelHandlerContext;
+import top.fateironist.constack.Container;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 import top.fateironist.cross_relay_core.model.control.ControlContext;
 import top.fateironist.cross_relay_core.model.proxy.tunnel.ClientUdpTunnelContext;
@@ -10,41 +11,38 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 
 public class ClientUdpProxyContext extends ClientProxyContext {
+    /** 地址路由索引：对端地址（service/server-proxy）-> 隧道（UDP 无连接，按地址寻址隧道） */
     private final Map<InetSocketAddress, ClientUdpTunnelContext> addressContextMap = new ConcurrentHashMap<>();
 
-    public ClientUdpProxyContext(String proxyId, List<ChannelHandlerContext> handlerContexts, ControlContext controlContext) {
-        super(proxyId, TransportLayerProtocol.UDP, handlerContexts, controlContext);
+    public ClientUdpProxyContext(Container parent, String proxyId, List<ChannelHandlerContext> handlerContexts, ControlContext controlContext) {
+        super(parent, proxyId, TransportLayerProtocol.UDP, handlerContexts, controlContext);
     }
 
     @Override
-    public TunnelContext createNewTunnelContext(String tunnelId) {
-        return new ClientUdpTunnelContext(tunnelId);
+    public TunnelContext createNewTunnelContext(Container parent, String tunnelId) {
+        return new ClientUdpTunnelContext(parent, tunnelId);
     }
 
-    public TunnelContext newTunnelContext(String tunnelId, InetSocketAddress address) {
-        TunnelContext tunnelContext = createNewTunnelContext(tunnelId);
-        tunnelContext.setTunnelCloseHook(tunnelCloseHook());
-
-        tunnelRegisterMap.put(tunnelContext.getTunnelId(), tunnelContext);
-        addressContextMap.put(address, (ClientUdpTunnelContext) tunnelContext);
-
-        return tunnelContext;
+    /** 受控方法：隧道端点确立时登记地址路由索引（由隧道容器回调） */
+    public void registerTunnelAddress(InetSocketAddress address, ClientUdpTunnelContext tunnel) {
+        addressContextMap.put(address, tunnel);
     }
 
+    /** 受控清理：隧道销毁时注销地址路由索引 */
     @Override
-    protected Consumer<TunnelContext> tunnelCloseHook() {
-        return new Consumer<TunnelContext>() {
-            @Override
-            public void accept(TunnelContext context) {
-                ClientUdpTunnelContext tunnelContext = (ClientUdpTunnelContext) context;
-                ClientUdpProxyContext.super.tunnelCloseHook().accept(context);
-                addressContextMap.remove(tunnelContext.getServerProxyAddress());
-                addressContextMap.remove(tunnelContext.getServiceAddress());
+    public void unregisterTunnel(String tunnelId) {
+        TunnelContext tunnel = tunnelRegisterMap.get(tunnelId);
+        if (tunnel instanceof ClientUdpTunnelContext udpTunnel) {
+            if (udpTunnel.getServerProxyAddress() != null) {
+                addressContextMap.remove(udpTunnel.getServerProxyAddress(), udpTunnel);
             }
-        };
+            if (udpTunnel.getServiceAddress() != null) {
+                addressContextMap.remove(udpTunnel.getServiceAddress(), udpTunnel);
+            }
+        }
+        super.unregisterTunnel(tunnelId);
     }
 
     public ClientUdpTunnelContext getTunnelContext(InetSocketAddress address) {

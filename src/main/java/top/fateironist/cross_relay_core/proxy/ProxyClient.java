@@ -3,7 +3,6 @@ package top.fateironist.cross_relay_core.proxy;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import lombok.extern.slf4j.Slf4j;
 import top.fateironist.cross_relay_core.Client;
@@ -13,6 +12,8 @@ import top.fateironist.cross_relay_core.model.args.proxy_client.ProxyClientConne
 import top.fateironist.cross_relay_core.model.info.ClientServiceInfo;
 import top.fateironist.cross_relay_core.model.info.ProxyServerInfo;
 import top.fateironist.cross_relay_core.proxy.listener.ProxyClientListener;
+
+import java.util.concurrent.Future;
 
 @Slf4j
 public class ProxyClient implements Client {
@@ -35,14 +36,12 @@ public class ProxyClient implements Client {
     @Override
     public Future<Void> connect(AbstractArgs arg) {
         ProxyClientConnectArgs args = (ProxyClientConnectArgs) arg;
-        var opts = args.getOptions();
-        Promise<Void> promise = workerGroup.next().newPromise();
 
         if (args.getProtocol() == TransportLayerProtocol.TCP) {
-            proxyTcpClient = new ProxyTcpClient(clientServiceInfo, proxyServerInfo, workerGroup, listener);
+            proxyTcpClient = new ProxyTcpClient(proxyServerInfo.getAddress().getServerProxyRequestAddress(), workerGroup, listener);
             return proxyTcpClient.connect(arg);
         } else {
-            proxyUdpClient = new ProxyUdpClient(clientServiceInfo, proxyServerInfo, workerGroup, listener);
+            proxyUdpClient = new ProxyUdpClient(proxyServerInfo.getAddress().getServerProxyRequestAddress(), workerGroup, listener);
             return proxyUdpClient.connect(arg);
         }
     }

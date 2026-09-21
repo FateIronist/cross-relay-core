@@ -6,11 +6,10 @@ import io.netty.channel.*;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
 import lombok.extern.slf4j.Slf4j;
+import top.fateironist.constack.Container;
+import top.fateironist.constack.Promise;
 import top.fateironist.cross_relay_core.Client;
-import top.fateironist.cross_relay_core.ClientStatus;
 import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
 import top.fateironist.cross_relay_core.model.args.AbstractArgs;
 import top.fateironist.cross_relay_core.model.args.proxy_client.ProxyClientConnectArgs;
@@ -24,22 +23,27 @@ import top.fateironist.cross_relay_core.proxy.listener.ProxyClientListener;
 import top.fateironist.cross_relay_core.util.JsonUtil;
 
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Future;
 
+/**
+ * UDP 代理客户端：顶层容器（无共享资源，load 即激活）；
+ * 每次 connect 在所属代理子容器下创建一条隧道，隧道双端地址（本地服务 + server-proxy）与 duplex 齐备才激活。
+ * Listener 为纯通知钩子，不参与状态机与资源回收。
+ */
 @Slf4j
-public class ProxyUdpClient implements Client {
+public class ProxyUdpClient extends Container implements Client {
     private final InetSocketAddress serverProxyRequestAddress;
     private final EventLoopGroup workerGroup;
     private final ProxyClientListener listener;
 
+    // 路由索引：proxyId -> 代理容器；索引项随容器销毁经 Effect 移除
     private final Map<String, ClientUdpProxyContext> proxyContextMap = new ConcurrentHashMap<>();
 
-    public volatile ClientStatus status = ClientStatus.INIT;
-
     public ProxyUdpClient(InetSocketAddress serverProxyRequestAddress, EventLoopGroup workerGroup, ProxyClientListener listener) {
+        super();
         this.serverProxyRequestAddress = serverProxyRequestAddress;
         this.workerGroup = workerGroup;
         this.listener = listener;
@@ -48,9 +52,29 @@ public class ProxyUdpClient implements Client {
     @Override
     public Future<Void> connect(AbstractArgs arg) {
         ProxyClientConnectArgs args = (ProxyClientConnectArgs) arg;
-        Promise<Void> promise = workerGroup.next().newPromise();
+        Promise<Void> promise = new Promise<>();
 
+        // 顶层容器仅首次 connect 前需要激活（无共享资源）；此后每次 connect 创建隧道
+        if (state() == State.PENDING) {
+            load();
+        }
+
+        Thread.startVirtualThread(() -> {
+            try {
+                connectTunnel(args);
+                promise.setSuccess(null);
+            } catch (Exception e) {
+                promise.setFailure(e);
+            }
+        });
+
+        return promise;
+    }
+
+    /** 创建代理容器（若不存在）与隧道，并绑定本端 duplex 数据报通道 */
+    private void connectTunnel(ProxyClientConnectArgs args) {
         ClientUdpProxyContext proxyContext = createContext(args.getProxyId(), args.getControlContext());
+        proxyContext.load();
 
         ClientUdpTunnelContext tunnelContext = (ClientUdpTunnelContext) proxyContext.newTunnelContext(args.getTunnelId());
 
@@ -73,7 +97,7 @@ public class ProxyUdpClient implements Client {
                             }
 
                             @Override
-                            public void channelActive(ChannelHandlerContext ctx) {
+                            public void channelActive(ChannelHandlerContext ctx) throws Exception {
                                 proxyContext.addHandlerContext(ctx);
                                 tunnelContext.setDuplexChannel(ctx.channel());
                                 tunnelContext.setServiceAddress(args.getServiceAddress());
@@ -83,7 +107,7 @@ public class ProxyUdpClient implements Client {
                                 // 发送初始认证信息
                                 ByteBuf byteBuf = ctx.alloc().buffer();
                                 CommonInfo clientProxyRegisterDTO = new CommonInfo(args.getTunnelId(), args.getProxyId());
-                                byteBuf.writeBytes(JsonUtil.OBJECT_MAPPER.writeValueAsBytes(clientProxyRegisterDTO).getBytes(StandardCharsets.UTF_8));
+                                byteBuf.writeBytes(JsonUtil.OBJECT_MAPPER.writeValueAsBytes(clientProxyRegisterDTO));
                                 tunnelContext.writeToServerProxyAndFlush(byteBuf);
                                 byteBuf.release();
 
@@ -93,7 +117,7 @@ public class ProxyUdpClient implements Client {
                             }
 
                             @Override
-                            public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+                            public void channelInactive(ChannelHandlerContext ctx) {
                                 ClientUdpTunnelContext context = (ClientUdpTunnelContext) ctx.channel().attr(TunnelContext.KEY).get();
                                 log.debug("[ProxyClient] UDP [{}，L:{}，R:{}] SERVER-CONNECTOR-INACTIVE",
                                         context != null ? context.getTunnelId() : tunnelContext.getTunnelId(),
@@ -122,84 +146,57 @@ public class ProxyUdpClient implements Client {
                 tunnelContext.getTunnelId(), args.getServiceAddress(),
                 serverProxyRequestAddress);
 
-        Thread.ofVirtual().start(() -> {
-            try {
-                duplexBootstrap.bind().sync();
-            } catch (InterruptedException e) {
-                promise.setFailure(e);
-                return;
-            }
-
-            listener.onTunnelEstablished(tunnelContext);
-            promise.setSuccess(null);
-        });
-
-        promise.addListener(f -> {
-            if (f.isSuccess()) {
-                status = ClientStatus.OPEN;
-            }
-        });
-
-        return promise;
+        try {
+            duplexBootstrap.bind().sync();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
     }
 
-    public Future<?> closeProxy(String proxyId) {
-        if (status == ClientStatus.OPEN) {
-            return proxyContextMap.get(proxyId).close();
+    public java.util.concurrent.Future<?> closeProxy(String proxyId) {
+        ClientUdpProxyContext context = proxyContextMap.get(proxyId);
+        if (context == null) {
+            return DefaultEventLoopGroup.failFuture(new IllegalStateException("unknown proxyId: " + proxyId));
         }
-        return DefaultEventLoopGroup.failFuture(new Exception("Proxy is not open"));
+        return context.close();
     }
 
     @Override
-    public Future<?> close() {
-        if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
-            status = ClientStatus.CLOSING;
-            Promise<?> promise = DefaultEventLoopGroup.newPromise();
-
-            Thread.ofVirtual().start(() -> {
-                proxyContextMap.forEach((k, v) -> {
-                    try {
-                        v.close().sync();
-                    } catch (Exception e) {
-                        promise.setFailure(e);
-                    }
-                });
-            });
-            promise.addListener(f -> status = ClientStatus.CLOSED);
-
-            return promise;
-        }
-
-        return DefaultEventLoopGroup.emptyFuture();
+    public java.util.concurrent.Future<?> close() {
+        return disposal();
     }
 
     @Override
     public void closeNow() {
-        if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
-            status = ClientStatus.CLOSING;
-            proxyContextMap.forEach((k, v) -> {
-                try {
-                    v.close();
-                } catch (Exception e) {
-
-                }
-            });
-            status = ClientStatus.CLOSED;
+        try {
+            disposal().get();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
+    /**
+     * 取得或创建代理子容器并登记路由索引；索引项随容器销毁经 Effect 移除，避免悬挂引用。
+     */
     public ClientUdpProxyContext createContext(String proxyId, ControlContext controlContext) {
-        ClientUdpProxyContext context = proxyContextMap.computeIfAbsent(proxyId, k -> {
-            ClientUdpProxyContext newContext = new ClientUdpProxyContext(k, new ArrayList<>(), controlContext);
-            decorateContext(newContext);
-            return newContext;
+        return proxyContextMap.computeIfAbsent(proxyId, k -> {
+            try {
+                ClientUdpProxyContext context = (ClientUdpProxyContext) child(k, new ArrayList<>(), controlContext).get();
+                context.effect(c -> proxyContextMap.remove(k));
+                return context;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         });
-        return context;
     }
 
-    public void decorateContext(ClientUdpProxyContext context) {
-        context.setCloseProxyHook(ctx -> {
-            proxyContextMap.remove(ctx.getProxyId());
-        });
+    @Override
+    protected Container createChild(Container parent, Object... args) {
+        String proxyId = (String) args[0];
+        @SuppressWarnings("unchecked")
+        java.util.List<ChannelHandlerContext> handlerContexts = (java.util.List<ChannelHandlerContext>) args[1];
+        ControlContext controlContext = (ControlContext) args[2];
+        return new ClientUdpProxyContext(parent, proxyId, handlerContexts, controlContext);
     }
 }

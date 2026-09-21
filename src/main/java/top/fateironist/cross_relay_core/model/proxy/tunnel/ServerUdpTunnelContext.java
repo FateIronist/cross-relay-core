@@ -4,11 +4,10 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.socket.DatagramPacket;
 import lombok.Getter;
-import top.fateironist.cross_relay_core.DefaultEventLoopGroup;
+import top.fateironist.constack.Container;
 import top.fateironist.cross_relay_core.model.TransportLayerProtocol;
 
 import java.net.InetSocketAddress;
-import java.util.concurrent.Future;
 
 public class ServerUdpTunnelContext extends TunnelContext {
     @Getter
@@ -24,52 +23,57 @@ public class ServerUdpTunnelContext extends TunnelContext {
 
     private final long timeOut = 30000;
 
-    public ServerUdpTunnelContext(String tunnelId) {
-        super(tunnelId, TransportLayerProtocol.UDP);
+    public ServerUdpTunnelContext(Container parent, String tunnelId) {
+        super(parent, tunnelId, TransportLayerProtocol.UDP);
     }
 
     public void writeToRequesterAndFlush(ByteBuf msg) {
         lastActiveTime = System.currentTimeMillis();
-        if (status == TunnelStatus.OPEN) requesterChannel.writeAndFlush(new DatagramPacket(msg.retain(), requesterAddress));
+        if (state() == State.ACTIVE) requesterChannel.writeAndFlush(new DatagramPacket(msg.retain(), requesterAddress));
     }
 
     public void writeToClientProxyAndFlush(ByteBuf msg) {
         lastActiveTime = System.currentTimeMillis();
-        if (status == TunnelStatus.OPEN) clientProxyChannel.writeAndFlush(new DatagramPacket(msg.retain(), clientProxyAddress));
+        if (state() == State.ACTIVE) clientProxyChannel.writeAndFlush(new DatagramPacket(msg.retain(), clientProxyAddress));
     }
 
     public void setClientProxy(InetSocketAddress clientProxyAddress, Channel clientProxyChannel) {
-        if (clientProxyAddress == null) this.clientProxyAddress = clientProxyAddress;
-        if (clientProxyChannel == null) this.clientProxyChannel = clientProxyChannel;
+        if (this.clientProxyAddress == null) {
+            this.clientProxyAddress = clientProxyAddress;
+        }
+        if (this.clientProxyChannel == null) {
+            this.clientProxyChannel = clientProxyChannel;
+            // Effect：关闭 client-proxy 侧数据报 channel（本容器持有的 Netty Channel）
+            effect(c -> clientProxyChannel.close());
+        }
         tryOpen();
     }
 
     public void setRequester(InetSocketAddress requesterAddress, Channel requesterChannel) {
-        if (requesterAddress == null) this.requesterAddress = requesterAddress;
-        if (requesterChannel == null) this.requesterChannel = requesterChannel;
+        if (this.requesterAddress == null) {
+            this.requesterAddress = requesterAddress;
+        }
+        if (this.requesterChannel == null) {
+            this.requesterChannel = requesterChannel;
+            // Effect：关闭 requester 侧数据报 channel（本容器持有的 Netty Channel）
+            effect(c -> requesterChannel.close());
+        }
         tryOpen();
     }
 
     @Override
-    protected boolean tryOpen() {
-        if (requesterChannel != null && clientProxyChannel != null && requesterAddress != null && clientProxyAddress != null) {
-            status = TunnelStatus.OPEN;
-            return true;
-        }
-
-        return false;
+    protected boolean isBothEndsReady() {
+        return requesterChannel != null && clientProxyChannel != null && requesterAddress != null && clientProxyAddress != null;
     }
 
-    public Future<?> checkTimeout() {
+    /** 空闲巡检：超时隧道优雅关闭（通知对端并销毁回收） */
+    public void checkTimeout() {
         if (isTimeout()) {
-            return closeGracefully();
+            closeGracefully();
         }
-
-        return DefaultEventLoopGroup.emptyFuture();
     }
 
     public boolean isTimeout() {
-        return status == TunnelStatus.OPEN && System.currentTimeMillis() - lastActiveTime > timeOut;
+        return state() == State.ACTIVE && System.currentTimeMillis() - lastActiveTime > timeOut;
     }
-
 }
