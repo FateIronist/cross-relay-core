@@ -37,18 +37,24 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 只负责构建加密通道和传递身份信息，其余如注册代理、业务事件发送由上层业务层在ControlClientListener通过ControlManager实现
+ * control 通道客户端：只负责加密通道构建、身份信息传递与控制事件（REQUIRE_CHANNEL / TUNNEL_CLOSE / PROXY_CLOSE 等）的收发。
+ * 一切核心功能留在核心库、绝不委托给上层：通道建立编排在 ProxyContext / TunnelContext 体系内闭环；
+ * listener 仅承担通知与业务 event 处理两种角色，不承担核心逻辑
  */
 @Slf4j
 public class ControlClient implements Client {
+    // 全局共享的 worker 线程组，既承载 channel 也用于调度 ping 定时任务
     private final EventLoopGroup workerGroup;
 
+    // 生命周期状态：INIT -> OPEN -> CLOSING -> CLOSED
     public volatile ClientStatus status = ClientStatus.INIT;
 
     // 这里的依赖是用来发送身份认证信息
     private ProxyClientInfo proxyClientInfo;
 
+    // 生命周期钩子
     private final ControlClientListener controlClientListener;
+    // 当前唯一控制连接的会话上下文，channelActive 时创建
     private ControlContext controlContext;
 
     public ControlClient(EventLoopGroup workerGroup, ProxyClientInfo proxyClientInfo, ControlClientListener controlClientListener) {
@@ -57,6 +63,11 @@ public class ControlClient implements Client {
         this.controlClientListener = controlClientListener;
     }
 
+    /**
+     * 装配 pipeline 并发起对服务端控制端口的 TCP 连接，仅在 INIT 状态下有效（重复调用返回空 Future）
+     * pipeline 依次为：读空闲检测 -> 长度域编解码 -> 加解密 -> JSON 编解码 -> 握手状态机；握手四阶段（公钥上行、AES 密钥接收、ACK 附身份、permit）全部由该状态机驱动
+     * 连接成功后状态置为 OPEN，握手完成点则是收到 CONNECTION_PERMIT 时调用的 afterPermit 钩子
+     */
     @Override
     public Future<Void> connect(AbstractArgs arg) {
         if (status == ClientStatus.INIT) {
@@ -80,6 +91,12 @@ public class ControlClient implements Client {
                             pipeline.addLast(new JsonEncoder());
                             pipeline.addLast(new JsonDecoder<>(new TypeReference<ControlEvent<Map<String, Object>>>() {}));
                             pipeline.addLast(new SimpleChannelInboundHandler<ControlEvent<Map<String, Object>>>() {
+                                /**
+                                 * 客户端侧的握手状态机，按 encrypted/permit 两个状态位分三段处理
+                                 * encrypted=false：只认 SESSION_SECRET_KEY（解出会话密钥、置加密、回 ACK 附身份、启动 ping 定时器），其余事件计入异常容忍
+                                 * encrypted=true 且 permit=false：只认 CONNECTION_PERMIT（回填 controlId 与服务端信息、置 permit、回调 afterPermit），其余事件走 onDeny 并关闭连接
+                                 * permit=true：PONG 用于计算 RTT，其余事件交给业务层的 onEvent
+                                 */
                                 @Override
                                 protected void channelRead0(ChannelHandlerContext ctx, ControlEvent<Map<String, Object>> event) {
                                     ControlContext context = controlContext;
@@ -107,7 +124,7 @@ public class ControlClient implements Client {
                                             context.writeAndFlush(response);
                                             log.debug("[ControlClient] [{}，L:{}，R:{}] SESSION-ACK-SENT", context.getControlId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
 
-                                            // 定时Ping
+                                            // 定时Ping：定时器随加密完成即启动，但只在 permit 后才真正发包，避免握手未完成就产生心跳
                                             ScheduledFuture<?> scheduledFuture = workerGroup.scheduleAtFixedRate(() -> {
                                                 if (context.isPermit()) {
                                                     log.debug("[ControlClient] [{}，L:{}，R:{}] PING-SENT", context.getControlId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
@@ -150,6 +167,7 @@ public class ControlClient implements Client {
                                         return;
                                     }
 
+                                    // 5.心跳应答：pingTime 由服务端原样回显，据此统计 RTT；其余事件均为业务事件
                                     if (ControlProtocolEventEnum.PONG.equals(event.getType())) {
                                         ProxyServerInfo proxyServerInfo = context.getProxyServerInfo();
                                         long lastPingTime = (long) event.getBody().get("pingTime");
@@ -161,6 +179,10 @@ public class ControlClient implements Client {
                                     }
                                 }
 
+                                /**
+                                 * 连接建立：创建会话上下文并挂到 channel attr（此时 controlId 仍为 null，由服务端在 permit 时回填），随后发起握手第 1 步——生成 RSA 密钥对上行公钥
+                                 * 私钥只留在本端 channel attr，收到会话密钥后立刻清空
+                                 */
                                 @Override
                                 public void channelActive(ChannelHandlerContext ctx) {
                                     controlContext = createControlContext(null, new ProxyServerInfo(), ctx.channel());
@@ -177,6 +199,10 @@ public class ControlClient implements Client {
                                     log.debug("[ControlClient] [{}，L:{}，R:{}] PUBLIC-KEY-SENT", controlContext.getControlId(), ctx.channel().localAddress(), ctx.channel().remoteAddress());
                                 }
 
+                                /**
+                                 * 连接断开（无论是本端关闭还是对端断开）：先回调 onClose 钩子，再关闭本端上下文
+                                 * context 可能尚未创建（连接建立前即失败），此时跳过钩子
+                                 */
                                 @Override
                                 public void channelInactive(ChannelHandlerContext ctx) {
                                     ControlContext context = controlContext;
@@ -190,6 +216,9 @@ public class ControlClient implements Client {
                                     close();
                                 }
 
+                                /**
+                                 * 通道异常：有会话上下文时交给业务层钩子决定处理方式，否则直接关闭 channel
+                                 */
                                 @Override
                                 public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                     ControlContext context = controlContext;
@@ -215,6 +244,7 @@ public class ControlClient implements Client {
         return DefaultEventLoopGroup.emptyFuture(null);
     }
 
+    /** 异步优雅关闭：置 CLOSING 后关闭会话上下文（内部会先通知对端 CLOSE 再关 channel），关闭完成后状态落到 CLOSED；非 OPEN/INIT 状态直接返回空 Future */
     @Override
     public Future<?> close() {
         if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
@@ -224,6 +254,7 @@ public class ControlClient implements Client {
         return DefaultEventLoopGroup.emptyFuture();
     }
 
+    /** 同步关闭，阻塞至 channel 关闭完成，中断等异常包装为 RuntimeException 抛出 */
     @Override
     public void closeNow() {
         if (status == ClientStatus.OPEN || status == ClientStatus.INIT) {
@@ -238,12 +269,14 @@ public class ControlClient implements Client {
     }
 
 
+    /** 创建控制会话上下文，并在返回前经 decorateControlContext 留出子类定制入口 */
     public ControlContext createControlContext(String controlId, ProxyServerInfo proxyServerInfo, Channel channel) {
         ControlContext newControlContext = new ControlContext(controlId, proxyServerInfo, channel);
         decorateControlContext(newControlContext);
         return newControlContext;
     }
 
+    /** 空实现的扩展点：子类可在此为新建的 ControlContext 附加自定义信息，默认不修改任何内容 */
     public void decorateControlContext(ControlContext controlContext) {
     }
 }

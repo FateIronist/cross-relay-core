@@ -64,6 +64,36 @@
             "type": "command",
             "timeout": 8,
             "command": "echo -e \"\\n=====本轮执行前置强制约束【最高优先级】=====\\n\" && cat CLAUDE.md 2>/dev/null && echo -e \"\\n硬性要求：本次所有思考、代码、工具操作必须严格遵守上面全部条款，禁止忽略、简化、变通任何规则\""
+          },
+          {
+            "type": "command",
+            "statusMessage": "【自增任务号 taskorder】",
+            "timeout": 10,
+            "command": "bash docs/scripts/increment_taskorder.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "【检查 design 文档索引】",
+            "timeout": 10,
+            "command": "bash docs/design/scripts/check_index.sh"
+          },
+          {
+            "type": "command",
+            "statusMessage": "【检查 logs 日志索引】",
+            "timeout": 10,
+            "command": "bash docs/logs/scripts/check_index.sh"
+          },
+          {
+            "type": "command",
+            "statusMessage": "【检查 pitfalls 踩坑索引】",
+            "timeout": 10,
+            "command": "bash docs/pitfalls/scripts/check_index.sh"
           }
         ]
       }

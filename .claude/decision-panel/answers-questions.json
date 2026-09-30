@@ -1,0 +1,48 @@
+{
+  "panelId": "cross-relay-pending-decisions",
+  "submittedAt": "2026-09-30T05:55:53.184Z",
+  "answers": [
+    {
+      "id": "q1",
+      "title": "P0：main 源码 9 个编译错误如何处置？",
+      "answer": "A：立即修复。Future 泛型统一改为接口声明的类型；ProxyTcpClient/ProxyUdpClient 保持 3 参构造，ProxyClient 门面改为 3 参转发；ProxyUdpClient.java:105 的 getBytes 笔误删除。修改时参考相似类统一模板、风格",
+      "skipped": false
+    },
+    {
+      "id": "q2",
+      "title": "第三节：12 项文档未记载的源码缺陷，修复范围与优先级？",
+      "answer": "E：仅修 #1–#5。#1 修复方向：start() 去掉局部变量遮蔽、无协议启用时返回 failFuture 而非 null、TCP 失败时回收已启动的 UDP。",
+      "skipped": false
+    },
+    {
+      "id": "q3",
+      "title": "第二节：15 项设计文档与源码不一致，是否按建议整体修订？",
+      "answer": "整体按建议修订：13 项立即改，#7/#14 待代码修复后按事实改写。",
+      "skipped": false
+    },
+    {
+      "id": "q4",
+      "title": "注释口径：已知缺陷处的注释保持中性还是明确标注缺陷？",
+      "answer": "G：保持中性描述，缺陷集中登记在待决策事项.md，避免注释随修复反复变动。",
+      "skipped": false
+    },
+    {
+      "id": "q5",
+      "title": "三个枚举被拆行（超出了「只加注释」的约定），接受还是改回？",
+      "answer": "J：接受拆行，逐常量注释信息量更大且今后可读性更好。",
+      "skipped": false
+    },
+    {
+      "id": "q6",
+      "title": "设计文档行号全线漂移，刷新行号还是改用纯符号引用？",
+      "answer": "M：改为符号引用。关键处可保留「方法名 + 原行号约数」辅助定位，但以符号为准。",
+      "skipped": false
+    },
+    {
+      "id": "q7",
+      "title": "两个遗留决策：ControlManager 空骨架删不删？onTunnelEstablished 两端语义不统一要不要统一？",
+      "answer": "方案一：删除 ControlManager；服务端 onTunnelEstablished 移到注册配对成功后触发，语义与客户端对齐。",
+      "skipped": false
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "panelId": "cross-relay-pending-decisions",
+  "panelTitle": "cross-relay-core 待决策事项（docs/design/待决策事项.md）",
+  "questions": [
+    {
+      "id": "q1",
+      "title": "P0：main 源码 9 个编译错误如何处置？",
+      "background": "main 源码自 HEAD 起即编译失败（已用 HEAD 原始版本单独编译验证，与注释补充和工作中改动无关）。9 个错误分两类：① 接口演进未收口——ProxyClient.java:58/62 以 4 参构造 ProxyTcpClient/ProxyUdpClient，但实现类签名已改为 3 参 (requesterAddress, group, listener)；ProxyUdpClient.java:105 对 byte[] 调 getBytes(Charset) 不存在。② Future 泛型不匹配——ProxyTcpServer:69/197、ProxyUdpServer:74/182、ControlServer:269、ServerInfoServer:109 返回 Future<?> 但声明要求 Future<Void>/ChannelFuture。",
+      "reason": "编译不过则一切验证（测试、运行）都无法进行；但不确认 ProxyTcpClient/ProxyUdpClient 的目标构造签名就无法贸然修——4 参版本是想把 serviceInfo/serverInfo 下沉进实现类，还是聚合门面退回 3 参转发，方向相反。",
+      "proposals": [
+        "A. 立即修复 9 个错误：Future 泛型按接口声明收窄/改声明统一为 Future<Void>；两个 Client 构造签名需先定方向（建议：实现类保持 3 参，聚合门面持有 serviceInfo/serverInfo 并在 connect 时传入所需部分，即回退门面为 3 参转发）",
+        "B. 另开独立任务修复，本次仅登记",
+        "C. 暂不处理"
+      ],
+      "defaultAnswer": "A：立即修复。Future 泛型统一改为接口声明的类型；ProxyTcpClient/ProxyUdpClient 保持 3 参构造，ProxyClient 门面改为 3 参转发；ProxyUdpClient.java:105 的 getBytes 笔误删除。"
+    },
+    {
+      "id": "q2",
+      "title": "第三节：12 项文档未记载的源码缺陷，修复范围与优先级？",
+      "background": "逐行核对发现的 12 项缺陷（详见待决策事项.md 第三节），影响最重的：#1 ProxyServer.start() 局部变量遮蔽成员字段 → shutdown/shutdownNow 空操作、两协议未启用时 start() 返回 null、TCP 失败不回收 UDP；#2 ClientUdpProxyContext 地址版 newTunnelContext 漏挂 closeRemoteTunnelHook → 优雅关闭即 NPE；#3 ServerUdpProxyContext.registerRequester 未判空强转；#4 ProxyUdpServer 注册失败不 return → NPE + 脏路由；#5 ProxyUdpClient.channelActive 未写 TunnelContext.KEY → 级联关闭失效。",
+      "reason": "#1–#5 直接影响可用性/稳定性，#6–#12 属健壮性/一致性/整洁度。全部修复与仅登记的工作量差异大，且 #1 的修复方向（start() 聚合逻辑重写）需要确认设计意图。",
+      "proposals": [
+        "D. 全部修复（#1–#12），按 P0（#1–#5）→ P1（#6–#10）→ P2（#11–#12）排序",
+        "E. 仅修 #1–#5（可用性/稳定性），其余登记到待决策事项.md 后续处理",
+        "F. 暂不处理，仅登记"
+      ],
+      "defaultAnswer": "E：仅修 #1–#5。#1 修复方向：start() 去掉局部变量遮蔽、无协议启用时返回 failFuture 而非 null、TCP 失败时回收已启动的 UDP。"
+    },
+    {
+      "id": "q3",
+      "title": "第二节：15 项设计文档与源码不一致，是否按建议整体修订？",
+      "background": "待决策事项.md 第二节列出 15 项文档失真，例如：ServerInfoServer 实为单播应答而非广播、handleAbnormalEvent 实为第 7 次才关闭而非 5 次、OriginalRequesterInfo 是两个字段自赋值、DefaultEventLoopGroup 实为工具入口而非 IO 线程组、ProxyClient/ProxyServer 门面无状态机、client-proxy 侧已无 attr 写入、#13 UDP 的 onTunnelEstablished 双触发未修（只有 TCP 修了）、#14 客户端 addressContextMap 永不填充（文档描述的是目标设计）等。",
+      "reason": "三大通道文档将作为后续工作核心，失真描述会持续误导；但其中 #7（ProxyServer.start 缺陷）与 #14（UDP 地址 map 未接线）依赖 q1/q2 的修复决策，文档措辞取决于修复后的事实。",
+      "proposals": [
+        "整体按建议修订：无依赖的 13 项立即改文档；#7、#14 两项待 q1/q2 修复落地后按修复后事实改写",
+        "仅修订阻塞理解的项（#2 次数、#7、#13、#14），其余暂缓",
+        "暂不修订"
+      ],
+      "defaultAnswer": "整体按建议修订：13 项立即改，#7/#14 待代码修复后按事实改写。"
+    },
+    {
+      "id": "q4",
+      "title": "注释口径：已知缺陷处的注释保持中性还是明确标注缺陷？",
+      "background": "本次为 62 个类补充了约 1085 行注释，涉及已知缺陷处一律采用中性客观描述（如 handleAbnormalEvent 写作「计数超过该上限即关闭连接」，不写次数、不写 bug）。",
+      "reason": "中性描述不误导新人但也不暴露风险；明确标注缺陷则更诚实，但若缺陷随后被修复（见 q2），注释需要二次清理。",
+      "proposals": [
+        "G. 保持中性描述（现状），缺陷统一登记在待决策事项.md",
+        "H. 明确标注为缺陷（写明 off-by-one 等性质），修复时同步清理注释",
+        "I. 其他口径（请填写）"
+      ],
+      "defaultAnswer": "G：保持中性描述，缺陷集中登记在待决策事项.md，避免注释随修复反复变动。"
+    },
+    {
+      "id": "q5",
+      "title": "三个枚举被拆行（超出了「只加注释」的约定），接受还是改回？",
+      "background": "为逐常量加注释，DeploymentMode、TransportLayerProtocol、TunnelStatus 由单行改为每常量独占一行，属代码格式改动。",
+      "reason": "逐常量注释有价值，但违反了本次「零代码改动」的约定边界；git diff 审查时会把格式噪音混入注释 diff。",
+      "proposals": [
+        "J. 接受拆行（保留逐常量注释）",
+        "K. 改回单行，改为行上方 // 注释或类级统一说明"
+      ],
+      "defaultAnswer": "J：接受拆行，逐常量注释信息量更大且今后可读性更好。"
+    },
+    {
+      "id": "q6",
+      "title": "设计文档行号全线漂移，刷新行号还是改用纯符号引用？",
+      "background": "本次注释使各文件行号整体下移，设计文档中大量 Xxx.java:NN 引用失效（部分在注释前就已偏移，如 ProxyUdpServer.java:164 实为 :165）。",
+      "reason": "逐次刷新行号不可持续——任何代码改动都会再次漂移；纯符号引用（类名#方法名）稳定但定位稍慢。三大通道文档是后续工作核心，引用可靠性重要。",
+      "proposals": [
+        "L. 统一刷新全部行号（一次性修正，接受后续维护成本）",
+        "M. 全部改为符号引用（类名 + 方法名），彻底消除漂移",
+        "N. 暂不处理"
+      ],
+      "defaultAnswer": "M：改为符号引用。关键处可保留「方法名 + 原行号约数」辅助定位，但以符号为准。"
+    },
+    {
+      "id": "q7",
+      "title": "两个遗留决策：ControlManager 空骨架删不删？onTunnelEstablished 两端语义不统一要不要统一？",
+      "background": "① 二节#9：ControlManager 空接口（无方法无实现无调用点）仍存在于 manager/ 包，此前你曾说「controlManager 可以删了，核心这里不会有了」，但代码未删，文档已被迫补记它。② 三节#10：onTunnelEstablished 服务端在 requester channelActive 触发（此时注册包配对可能未完成/已失败），客户端语义是「双连接 sync 成功、必然 OPEN」——同一钩子两端语义不等价。",
+      "reason": "① 只删一个文件加两处文档引用，无风险，但需要你确认当初的删除决定仍然有效；② 统一语义的最佳时机是现在（q2 修复 #1–#5 会触碰相关路径），拖延会导致两套语义固化。",
+      "proposals": [
+        "① 删除 ControlManager + 文档去掉补记；② 服务端 onTunnelEstablished 改为注册配对成功后触发（与客户端语义对齐），本轮随 q2 一起修",
+        "① 删除 ControlManager；② onTunnelEstablished 暂不统一，仅在文档标注两端语义差异",
+        "两者都暂不处理"
+      ],
+      "defaultAnswer": "方案一：删除 ControlManager；服务端 onTunnelEstablished 移到注册配对成功后触发，语义与客户端对齐。"
+    }
+  ]
+}

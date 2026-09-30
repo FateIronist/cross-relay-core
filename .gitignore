@@ -32,8 +32,9 @@ build/
 ### VS Code ###
 .vscode/
 
-logs/
+# 仅忽略仓库根目录的运行时日志；docs/logs/ 为 agent 任务日志，需纳入版本控制。
+# 注意前导斜杠不可去：无斜杠的 `logs/` 会匹配任意层级，连带忽略 docs/logs/。
+/logs/
 .idea/
-docs/
 .superpowers/
 .claude/worktrees/

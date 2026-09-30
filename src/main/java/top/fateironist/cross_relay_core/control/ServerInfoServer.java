@@ -23,16 +23,20 @@ import java.util.Map;
 import java.util.concurrent.Future;
 
 /**
- * 对外暴露自身服务器代理信息UDP服务
+ * 服务端元数据的 UDP 发现服务：在固定端口回答 SERVER_INFO 查询，用 JSON 回吐本机 ProxyServerInfo（control/proxyRequest/infoServer 三地址）
+ * 属备选寻址手段，库内目前无实际调用方（客户端侧对应 ProxyServerInfo.getMetaDataFromServerInfoServer()），服务端信息后续也可能改由 HTTP 等渠道暴露
  */
 public class ServerInfoServer implements Server {
+    // 固定端口，客户端侧的发现逻辑按此端口硬编码，不可随意变更
     public static final int PORT = 3461;
     private final Bootstrap bootstrap;
     private final EventLoopGroup workerGroup;
+    // 应答内容，即本机的服务端元数据
     private final ProxyServerInfo proxyServerInfo;
 
     public volatile ServerStatus status = ServerStatus.INIT;
 
+    // 绑定后的 UDP channel，供关闭时使用
     private Channel channel;
 
     public ServerInfoServer(EventLoopGroup workerGroup, ProxyServerInfo proxyServerInfo) {
@@ -41,6 +45,10 @@ public class ServerInfoServer implements Server {
         this.bootstrap = new Bootstrap();
     }
 
+    /**
+     * 绑定固定端口启动 UDP 服务，仅在 INIT 状态下生效（重复调用直接返回失败 Future）
+     * 收到 SERVER_INFO 查询时当场应答当前 proxyServerInfo，其余类型的事件忽略
+     */
     public Future<Void> start(AbstractArgs arg) {
         if (status == ServerStatus.INIT) {
             ServerInfoServerStartArgs args = (ServerInfoServerStartArgs) arg;
@@ -54,6 +62,10 @@ public class ServerInfoServer implements Server {
                         ChannelPipeline pipeline = ch.pipeline();
                         pipeline.addLast(new ChannelTrafficShapingHandler(opts.getWriteLimit(), opts.getReadLimit()));
                         pipeline.addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
+                            /**
+                             * 解析查询报文，仅在事件类型为 SERVER_INFO 时把本机元数据回给请求来源地址
+                             * 报文内容由客户端构造，解析失败会抛出交由 exceptionCaught 吞掉，不影响后续查询
+                             */
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws JsonProcessingException {
                                 ByteBuf content = msg.content();
@@ -74,6 +86,9 @@ public class ServerInfoServer implements Server {
                                 }
                             }
 
+                            /**
+                             * 刻意留空：发现服务面向未知来源的 UDP 请求，单个畸形报文不应导致服务中断，故吞掉异常
+                             */
                             @Override
                             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                             }
@@ -94,6 +109,7 @@ public class ServerInfoServer implements Server {
         return DefaultEventLoopGroup.failFuture(new Exception("Server is not in INIT state"));
     }
 
+    /** 异步关闭 UDP channel，状态经 STOPPING 在关闭完成后落到 SHUTDOWN */
     @Override
     public Future<?> shutdown() {
         if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
@@ -103,6 +119,7 @@ public class ServerInfoServer implements Server {
         return DefaultEventLoopGroup.emptyFuture();
     }
 
+    /** 同步关闭 UDP channel，阻塞至 channel 关闭完成 */
     @Override
     public void shutdownNow() {
         if (status == ServerStatus.RUNNING || status == ServerStatus.INIT) {
